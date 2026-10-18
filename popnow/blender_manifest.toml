@@ -1,0 +1,28 @@
+schema_version = "1.0.0"
+
+id = "popnow"
+version = "0.1.0"
+name = "PopNow AI Render"
+tagline = "Turn clay renders and camera moves into AI images and video"
+maintainer = "PopNow <support@popnow.ai>"
+type = "add-on"
+
+website = "https://popnow.ai/blender"
+tags = ["Render", "Camera", "Material", "Sequencer", "Import-Export"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 PopNow"]
+
+[permissions]
+network = "Send renders to PopNow and download the results"
+files = "Save generated images and videos next to your project"
+clipboard = "Copy task IDs for support requests"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/*.zip",
+]

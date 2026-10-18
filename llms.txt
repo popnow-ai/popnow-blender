@@ -1,0 +1,38 @@
+# PopNow for Blender
+
+> PopNow for Blender is a free, open-source (GPL-3.0-or-later) Blender 4.2+ add-on that turns clay renders, camera views and camera animations into AI images, AI video and seamless textures using models hosted on PopNow (https://popnow.ai). It adds a PopNow tab to the 3D Viewport sidebar and spends the same credits as popnow.ai.
+
+## Workflows
+
+- Render with AI: grey clay render (camera, viewport or last F12 render) + optional depth / normal / line-art pass + up to three reference images -> finished image. Models: Seedream 5.0 Pro, Seedream 5.0 Flash, Nano Banana 2.1, GPT Image 2, Qwen-Image 2.1 Turbo, FLUX.1 dev ControlNet.
+- Animate with AI: Workbench preview of the camera animation -> MP4 that keeps the camera move and timing. Models: Seedance 2.0 Mini, Seedance 2.0 Fast, Seedance 2.0, Seedance 2.5, Wan 3.0, Kling O3 Restyle, Wan 2.2 Animate (motion transfer onto a character image).
+- Texture: prompt -> square seamless texture and box-projected material. Models: Seedream 5.0 Flash, Qwen-Image 2.1 Turbo, Seedream 5.0 Pro, Nano Banana 2.1.
+
+## Install
+
+- Build: `python3 scripts/build_zip.py` writes `dist/popnow-blender-<version>.zip` (or download it from https://popnow.ai/blender).
+- Blender: Edit > Preferences > Get Extensions > menu > Install from Disk, or drag the zip into Blender. Allow online access.
+- API key: https://popnow.ai/api/console/keys (keys start with `sk-popnow-`); paste it in the PopNow tab (N panel). The `POPNOW_API_KEY` environment variable is used when no key is saved.
+
+## How it works
+
+- Pure standard-library client in `popnow/core/client.py` against `https://api.popnow.ai/api/v1`.
+- Upload: `POST /common/upload-url` -> PUT bytes -> `POST /files/{fileId}/commit` -> `popnow://f/...` URI.
+- Price: `POST /jobs/quote`, user confirms, then `POST /jobs/createTask` with `quoteId`, `expectedCredits` and `Idempotency-Key`.
+- Result: poll `GET /jobs/recordInfo?taskId=...` until `succeeded` / `failed` / `expired`; download `output.assets[].url` without the key.
+- Credits: 1 credit = $0.01, credit packs with no subscription, failed runs refunded.
+
+## Repository layout
+
+- `popnow/`: the extension (manifest, `core/` without bpy, `ui/` Blender side, `licenses/`).
+- `scripts/build_zip.py`, `scripts/sync_models.py`: packaging and model table refresh.
+- `tests/`: `python3 -m unittest discover -s tests -v` (no Blender needed); `tests/blender_selftest.py` runs inside Blender.
+
+## Links
+
+- Blender add-on page: https://popnow.ai/blender
+- Blender guide: https://popnow.ai/docs/blender
+- API docs: https://popnow.ai/docs
+- OpenAPI reference: https://popnow.ai/docs/openapi
+- MCP server: https://popnow.ai/mcp
+- Other repos: https://github.com/popnow-ai/popnow-api, https://github.com/popnow-ai/popnow-python, https://github.com/popnow-ai/popnow-js, https://github.com/popnow-ai/popnow-mcp, https://github.com/popnow-ai/popnow-skills

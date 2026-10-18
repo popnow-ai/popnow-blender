@@ -1,0 +1,17 @@
+# Build output
+dist/
+*.zip
+*.part
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# OS files
+.DS_Store
+
+# Local repository metadata (not published)
+REPO_META.json
