@@ -20,7 +20,7 @@
 - Upload: `POST /common/upload-url` -> PUT bytes -> `POST /files/{fileId}/commit` -> `popnow://f/...` URI.
 - Price: `POST /jobs/quote`, user confirms, then `POST /jobs/createTask` with `quoteId`, `expectedCredits` and `Idempotency-Key`.
 - Result: poll `GET /jobs/recordInfo?taskId=...` until `succeeded` / `failed` / `expired`; download `output.assets[].url` without the key.
-- Credits: 1 credit = $0.01, credit packs with no subscription, failed runs refunded.
+- Credits: 1 credit = $0.001, credit packs with no subscription, failed runs refunded.
 
 ## Repository layout
 

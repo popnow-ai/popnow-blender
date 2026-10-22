@@ -214,9 +214,9 @@ class BpySmokeTest(unittest.TestCase):
             est = self.ops.estimate_for(wf, p)
             self.assertIsNotNone(est, wf)
             self.assertGreater(est.credits, 0)
-        # defaults: Seedream 5.0 Pro 2K = 11; Seedance 2.0 Mini default 720p 5 s + 5 s clay clip = 36
-        self.assertEqual(self.ops.estimate_for("render", p).credits, 11)
-        self.assertEqual(self.ops.estimate_for("animate", p).credits, 36)
+        # defaults: Seedream 5.0 Pro 2K = 72; Seedance 2.0 Mini default 720p 5 s + 5 s clay clip = 236
+        self.assertEqual(self.ops.estimate_for("render", p).credits, 72)
+        self.assertEqual(self.ops.estimate_for("animate", p).credits, 236)
 
     def test_texture_operator_builds_job(self):
         ctx = self.context(selected=[types.SimpleNamespace(name="Cube", data=types.SimpleNamespace(materials=[]))])

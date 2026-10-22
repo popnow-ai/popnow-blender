@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Prices follow the new credit unit (1 credit = $0.001 since 2026-10-19): the bundled price tables in `popnow/core/models.json`, the README model table and the live estimates in the panel.
+- "Start without asking up to" now goes up to 5,000 credits, the same $5 ceiling as before.
+
 ## [0.1.0] - 2026-10-16
 
 ### Added

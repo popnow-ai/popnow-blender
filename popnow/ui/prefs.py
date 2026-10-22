@@ -44,7 +44,7 @@ class POPNOW_AP_preferences(bpy.types.AddonPreferences):
         description="Skip the confirm step when the quote is at most this many credits. 0 always asks",
         default=0,
         min=0,
-        max=500,
+        max=5000,
     )
     open_results: BoolProperty(
         name="Show image results in an Image Editor",

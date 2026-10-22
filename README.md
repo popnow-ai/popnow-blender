@@ -24,7 +24,7 @@ Block out a scene with grey shapes, frame it with your camera, and PopNow paints
 | ![Clay blockout of two figures at a cafe table](docs/images/blender-clay-duo-cafe.webp) | ![The same scene rendered as a sunlit cafe with two people](docs/images/blender-render-duo-cafe.webp) |
 | ![Clay bottle on a plinth](docs/images/blender-clay-product.webp) | ![The bottle rendered as a product shot](docs/images/blender-render-product.webp) |
 
-*Top: Seedream 5.0 Pro with two reference photos, 6 credits. Bottom: Nano Banana 2.1 with one product photo, 8 credits.*
+*Top: Seedream 5.0 Pro with two reference photos, 36 credits. Bottom: Nano Banana 2.1 with one product photo, 48 credits.*
 
 ## Quickstart
 
@@ -58,27 +58,27 @@ Now write what you want to see, pick a style and a model, and click the button t
 
 ### Supported models
 
-Prices are in credits (1 credit = $0.01), match popnow.ai, and are the lowest tier of each model. The live catalog is at `GET https://api.popnow.ai/api/v1/models`.
+Prices are in credits (1 credit = $0.001), match popnow.ai, and are the lowest tier of each model. The live catalog is at `GET https://api.popnow.ai/api/v1/models`.
 
 | Workflow | Model | Good for | From |
 | --- | --- | --- | --- |
-| Render | Seedream 5.0 Pro | Balanced; follows your layout closely | 6 credits per 1K image |
-| Render | Seedream 5.0 Flash | Faster and cheaper | 5 credits |
-| Render | Nano Banana 2.1 | Best with many reference images | 8 credits |
-| Render | GPT Image 2 | Strong text and fine detail | 7 credits |
-| Render | Qwen-Image 2.1 Turbo | Cheapest drafts | 3 credits |
-| Render | FLUX.1 dev ControlNet | Exact shapes from a depth or line pass; no reference images | 6 credits |
-| Animate | Seedance 2.0 Mini | Cheapest, good for drafts | 17 credits per 480p 5 s |
-| Animate | Seedance 2.0 Fast | Balance of price and quality | 34 credits |
-| Animate | Seedance 2.0 | Higher quality, up to 4K | 65 credits |
-| Animate | Seedance 2.5 | Follows clay previz best | 111 credits |
-| Animate | Wan 3.0 | Strong motion, up to 1080p | 68 credits |
-| Animate | Kling O3 Restyle | Repaints your clip frame by frame, 3 to 10 s | 94 credits per 720p 5 s |
-| Animate | Wan 2.2 Animate | Motion control: your character copies the clay figure | 40 credits |
-| Texture | Seedream 5.0 Flash | Fast and cheap | 5 credits per 1K image |
-| Texture | Qwen-Image 2.1 Turbo | Cheapest | 3 credits |
-| Texture | Seedream 5.0 Pro | Most detail | 6 credits |
-| Texture | Nano Banana 2.1 | Up to 4K | 8 credits |
+| Render | Seedream 5.0 Pro | Balanced; follows your layout closely | 36 credits per 1K image |
+| Render | Seedream 5.0 Flash | Faster and cheaper | 29 credits |
+| Render | Nano Banana 2.1 | Best with many reference images | 48 credits |
+| Render | GPT Image 2 | Strong text and fine detail | 43 credits |
+| Render | Qwen-Image 2.1 Turbo | Cheapest drafts | 15 credits |
+| Render | FLUX.1 dev ControlNet | Exact shapes from a depth or line pass; no reference images | 36 credits |
+| Animate | Seedance 2.0 Mini | Cheapest, good for drafts | 110 credits per 480p 5 s |
+| Animate | Seedance 2.0 Fast | Balance of price and quality | 226 credits |
+| Animate | Seedance 2.0 | Higher quality, up to 4K | 431 credits |
+| Animate | Seedance 2.5 | Follows clay previz best | 738 credits |
+| Animate | Wan 3.0 | Strong motion, up to 1080p | 450 credits |
+| Animate | Kling O3 Restyle | Repaints your clip frame by frame, 3 to 10 s | 626 credits per 720p 5 s |
+| Animate | Wan 2.2 Animate | Motion control: your character copies the clay figure | 265 credits |
+| Texture | Seedream 5.0 Flash | Fast and cheap | 29 credits per 1K image |
+| Texture | Qwen-Image 2.1 Turbo | Cheapest | 15 credits |
+| Texture | Seedream 5.0 Pro | Most detail | 36 credits |
+| Texture | Nano Banana 2.1 | Up to 4K | 48 credits |
 
 ## Usage
 

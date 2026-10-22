@@ -44,7 +44,7 @@ class State:
         self.tasks: dict[str, dict] = {}
         self.idem: dict[str, str] = {}
         self.calls: list[tuple[str, str]] = []
-        self.balance = 500
+        self.balance = 5000
         self.fail_quote_once = False
 
 
@@ -101,7 +101,7 @@ def make_handler(state: State):
             if not self._auth():
                 return
             if u.path == "/api/v1/chat/credit":
-                return self._ok({"available": f"{state.balance / 100:.2f}", "held": "0.00", "total": f"{state.balance / 100:.2f}", "availableCredits": state.balance, "heldCredits": 0, "totalCredits": state.balance})
+                return self._ok({"available": f"{state.balance / 1000:.3f}", "held": "0.000", "total": f"{state.balance / 1000:.3f}", "availableCredits": state.balance, "heldCredits": 0, "totalCredits": state.balance})
             if u.path == "/api/v1/jobs/recordInfo":
                 tid = parse_qs(u.query).get("taskId", [""])[0]
                 with state.lock:
@@ -152,13 +152,13 @@ def make_handler(state: State):
                     state.fail_quote_once = False
                     return self._err(503, 503, "Busy", "")
                 credits = self._price(body)
-                return self._ok({"quoteId": f"q_{credits}_{uuid.uuid4().hex[:6]}", "model": body["model"], "estimatedCost": f"{credits / 100:.2f}", "maxCharge": f"{credits / 100:.2f}", "maxCredits": credits, "expectedCredits": credits, "currency": "USD", "quantity": "1", "unit": "image", "expiresAt": "2099-01-01T00:00:00Z"})
+                return self._ok({"quoteId": f"q_{credits}_{uuid.uuid4().hex[:6]}", "model": body["model"], "estimatedCost": f"{credits / 1000:.3f}", "maxCharge": f"{credits / 1000:.3f}", "maxCredits": credits, "expectedCredits": credits, "currency": "USD", "quantity": "1", "unit": "image", "expiresAt": "2099-01-01T00:00:00Z"})
             if u.path == "/api/v1/jobs/createTask":
                 key = self.headers.get("Idempotency-Key", "")
                 with state.lock:
                     if key and key in state.idem:
                         t = state.tasks[state.idem[key]]
-                        return self._ok({"taskId": t["taskId"], "state": t["state"], "estimatedCost": "0.06", "estimatedCredits": t["credits"], "deadlineAt": "2099-01-01T00:00:00Z"}, 202)
+                        return self._ok({"taskId": t["taskId"], "state": t["state"], "estimatedCost": f"{t['credits'] / 1000:.3f}", "estimatedCredits": t["credits"], "deadlineAt": "2099-01-01T00:00:00Z"}, 202)
                     credits = self._price(body)
                     if body.get("expectedCredits") is not None and int(body["expectedCredits"]) != credits:
                         return self._err(409, 40901, "Price changed")
@@ -175,7 +175,7 @@ def make_handler(state: State):
                     if key:
                         state.idem[key] = tid
                     state.balance -= credits
-                return self._ok({"taskId": tid, "state": "queued", "estimatedCost": f"{credits / 100:.2f}", "estimatedCredits": credits, "deadlineAt": "2099-01-01T00:00:00Z"}, 202)
+                return self._ok({"taskId": tid, "state": "queued", "estimatedCost": f"{credits / 1000:.3f}", "estimatedCredits": credits, "deadlineAt": "2099-01-01T00:00:00Z"}, 202)
             if u.path == "/api/v1/common/download-url":
                 t = state.tasks.get(body.get("taskId", ""))
                 if not t:
@@ -187,17 +187,17 @@ def make_handler(state: State):
         def _price(self, body: dict) -> int:
             m = body.get("model", "")
             if "reference-to-video" in m or "video-edit" in m or "character-animation" in m:
-                return 17
+                return 110
             if "turbo" in m:
-                return 3
-            return 6
+                return 15
+            return 36
 
         def _record(self, t: dict) -> dict:
             if t["polls"] >= 2 and t["state"] in ("queued", "running"):
                 t["state"] = "failed" if t["fail"] else "succeeded"
             elif t["polls"] == 1:
                 t["state"] = "running"
-            rec = {"taskId": t["taskId"], "model": t["model"], "state": t["state"], "cost": f"{t['credits'] / 100:.2f}", "credits": t["credits"], "settled": False, "createdAt": "2026-10-16T00:00:00Z", "deadlineAt": "2099-01-01T00:00:00Z"}
+            rec = {"taskId": t["taskId"], "model": t["model"], "state": t["state"], "cost": f"{t['credits'] / 1000:.3f}", "credits": t["credits"], "settled": False, "createdAt": "2026-10-16T00:00:00Z", "deadlineAt": "2099-01-01T00:00:00Z"}
             if t["state"] == "succeeded":
                 rec["settled"] = True
                 ext, mime = ("mp4", "video/mp4") if t["video"] else ("png", "image/png")

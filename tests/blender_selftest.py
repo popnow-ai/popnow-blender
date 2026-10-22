@@ -3,7 +3,7 @@
 Usage (from the repository root):
     blender --background --factory-startup --python tests/blender_selftest.py            # fake backend, no cost
   POPNOW_API_KEY=sk-popnow-… blender --background --factory-startup --python tests/blender_selftest.py -- --live
-            # real API: runs only one cheapest Render (Qwen-Image 2.1 Turbo, about 3 credits)
+            # real API: runs only one cheapest Render (Qwen-Image 2.1 Turbo, about 15 credits)
 
 Background mode has no event loop, so bpy.app.timers never fire on their own; runtime._tick() is called by hand here. A non-zero exit code means failure.
 """

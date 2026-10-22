@@ -49,7 +49,7 @@ class FakeServerCase(unittest.TestCase):
 class ClientTests(FakeServerCase):
     def test_balance(self):
         b = self.client.balance()
-        self.assertEqual(b["availableCredits"], 500)
+        self.assertEqual(b["availableCredits"], 5000)
 
     def test_bad_key_gives_friendly_401(self):
         bad = C.PopNowClient("sk-popnow-wrong", self.base, sleep=lambda s: None)
@@ -66,14 +66,14 @@ class ClientTests(FakeServerCase):
     def test_quote_retries_on_503(self):
         self.state.fail_quote_once = True
         q = self.client.quote("bytedance/seedream-5.0-pro/edit", {"prompt": "x", "image_urls": ["https://example.com/a.png"]})
-        self.assertEqual(q["maxCredits"], 6)
+        self.assertEqual(q["maxCredits"], 36)
 
     def test_create_task_is_idempotent(self):
         body = ("bytedance/seedream-5.0-pro/edit", {"prompt": "x", "image_urls": ["https://example.com/a.png"]})
-        a = self.client.create_task(*body, expected_credits=6, idempotency_key="blender-same")
-        b = self.client.create_task(*body, expected_credits=6, idempotency_key="blender-same")
+        a = self.client.create_task(*body, expected_credits=36, idempotency_key="blender-same")
+        b = self.client.create_task(*body, expected_credits=36, idempotency_key="blender-same")
         self.assertEqual(a["taskId"], b["taskId"])
-        self.assertEqual(self.state.balance, 494)
+        self.assertEqual(self.state.balance, 4964)
 
     def test_price_change_is_40901(self):
         with self.assertRaises(C.ApiError) as cm:
@@ -125,19 +125,19 @@ class JobTests(FakeServerCase):
         while job.state != "awaiting_confirm" and time.time() < deadline:
             time.sleep(0.01)
         self.assertEqual(job.state, "awaiting_confirm")
-        self.assertEqual(job.max_credits, 6)
+        self.assertEqual(job.max_credits, 36)
         r.confirm()
         r.join(10)
         self.assertEqual(job.state, "succeeded", job.status)
         self.assertEqual(len(job.outputs), 1)
         with open(job.outputs[0], "rb") as f:
             self.assertTrue(f.read(8).startswith(b"\x89PNG"))
-        self.assertEqual(job.credits, 6)
+        self.assertEqual(job.credits, 36)
         self.assertTrue(job.input["image_urls"][0].startswith("popnow://f/"))
 
     def test_auto_confirm_below_threshold(self):
         job = self.make_job()
-        r = _runner(self.client, job, [], auto_confirm_below=10)
+        r = _runner(self.client, job, [], auto_confirm_below=50)
         r.start()
         r.join(10)
         self.assertEqual(job.state, "succeeded")
@@ -153,22 +153,22 @@ class JobTests(FakeServerCase):
         r.join(5)
         self.assertEqual(job.state, "canceled")
         self.assertIn("Nothing was charged", job.status)
-        self.assertEqual(self.state.balance, 500)
+        self.assertEqual(self.state.balance, 5000)
         self.assertFalse(any(p == "/api/v1/jobs/createTask" for _, p in self.state.calls))
 
     def test_failed_task_reports_refund(self):
         job = self.make_job(prompt="FAIL please")
-        r = _runner(self.client, job, [], auto_confirm_below=100)
+        r = _runner(self.client, job, [], auto_confirm_below=1000)
         r.start()
         r.join(10)
         self.assertEqual(job.state, "failed")
         self.assertTrue(job.refunded)
         self.assertIn("credits were refunded", job.status)
-        self.assertEqual(self.state.balance, 500)
+        self.assertEqual(self.state.balance, 5000)
 
     def test_stop_after_submit_then_resume(self):
         job = self.make_job()
-        r = JobRunner(self.client, job, lambda j: None, build_input=lambda j, u: {"prompt": "x", "image_urls": u["structure"]}, auto_confirm_below=100, sleep=lambda s: time.sleep(0.2))
+        r = JobRunner(self.client, job, lambda j: None, build_input=lambda j, u: {"prompt": "x", "image_urls": u["structure"]}, auto_confirm_below=1000, sleep=lambda s: time.sleep(0.2))
         r.start()
         deadline = time.time() + 5
         while not job.task_id and time.time() < deadline:
@@ -188,7 +188,7 @@ class JobTests(FakeServerCase):
             f.write(b"\x00\x00\x00\x18ftypmp42" + b"0" * 64)
         job = self.make_job(model="bytedance/seedance-2.0-mini/reference-to-video", workflow="animate", media=[MediaFile(clip, "clip", 5.0)])
         job.options = {"duration": 5, "resolution": "480p"}
-        r = _runner(self.client, job, [], auto_confirm_below=100)
+        r = _runner(self.client, job, [], auto_confirm_below=1000)
         r.start()
         r.join(10)
         self.assertEqual(job.state, "succeeded", job.status)
@@ -215,18 +215,18 @@ class ModelTests(unittest.TestCase):
     def test_estimates_match_site_prices(self):
         # matches the credit prices shown on popnow.ai
         pro = models.get("bytedance/seedream-5.0-pro/edit")
-        self.assertEqual(models.estimate(pro, {"resolution": "1k"}).credits, 6)
-        self.assertEqual(models.estimate(pro, {"resolution": "2k"}).credits, 11)
+        self.assertEqual(models.estimate(pro, {"resolution": "1k"}).credits, 36)
+        self.assertEqual(models.estimate(pro, {"resolution": "2k"}).credits, 72)
         mini = models.get("bytedance/seedance-2.0-mini/reference-to-video")
         e = models.estimate(mini, {"resolution": "480p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0])
-        self.assertEqual(e.credits, 17)  # (5 + 5) × 1.65 = 16.5 → 17
+        self.assertEqual(e.credits, 110)  # (5 + 5) × 10.97 = 109.7 → 110
         self.assertFalse(e.approx)
         wan = models.get("alibaba/wan-3.0/reference-to-video")
-        self.assertEqual(models.estimate(wan, {"resolution": "720p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0]).credits, 135)
+        self.assertEqual(models.estimate(wan, {"resolution": "720p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0]).credits, 900)
         turbo = models.get("alibaba/qwen-image-2.1-turbo/edit")
-        self.assertEqual(models.estimate(turbo, {}).credits, 3)
+        self.assertEqual(models.estimate(turbo, {}).credits, 15)
         kling = models.get("kling/o3/video-edit")
-        self.assertEqual(models.estimate(kling, {"resolution": "720p"}, output_seconds=5).credits, 94)
+        self.assertEqual(models.estimate(kling, {"resolution": "720p"}, output_seconds=5).credits, 626)
 
     def test_duration_options_drop_smart(self):
         mini = models.get("bytedance/seedance-2.0-mini/reference-to-video")
