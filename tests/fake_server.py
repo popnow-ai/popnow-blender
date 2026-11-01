@@ -3,8 +3,11 @@
 No network, no cost. Behavior:
 - the key must be sk-popnow-test..., otherwise 401;
 - the full three-step upload (PUT to a local URL, commit returns popnow://f/fil_...);
-- quote returns fixed credits per model; createTask with expectedCredits must match maxCredits, otherwise 40901;
-- tasks succeed after two polls (a task whose prompt contains FAIL fails and settles at 0 credits on the next read);
+- money in the current API shape: exact USD strings (maxChargeUsd, estimatedCostUsd, costUsd, availableUsd) next to the
+  deprecated credit fields (1 credit = $0.001); with state.legacy = True only the older fields are sent (USD aliases and credits);
+- quote returns a fixed price per model; createTask with expectedCostUsd (or the deprecated expectedCredits) must match the
+  quote's maximum, otherwise 40901;
+- tasks succeed after two polls (a task whose prompt contains FAIL fails and settles at $0 on the next read);
 - outputs: an image is an 8x8 PNG, a video is a few bytes of fake mp4.
 Usage: python3 tests/fake_server.py [port] (default 8799); set the base URL to http://127.0.0.1:<port>/api/v1
 """
@@ -12,6 +15,7 @@ Usage: python3 tests/fake_server.py [port] (default 8799); set the base URL to h
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 import sys
 import threading
 import uuid
@@ -44,8 +48,18 @@ class State:
         self.tasks: dict[str, dict] = {}
         self.idem: dict[str, str] = {}
         self.calls: list[tuple[str, str]] = []
-        self.balance = 5000
+        self.balance = 5000  # in credits internally; sent as USD (1 credit = $0.001)
         self.fail_quote_once = False
+        # True: answer like a server from before the USD fields (only estimatedCost / maxCharge / cost / available and credits)
+        self.legacy = False
+        # The last createTask body, so tests can check what the add-on confirmed
+        self.last_create: dict = {}
+
+
+def usd(credits: int) -> str:
+    """Exact USD string for an amount in credits, the way the API writes it ("0.036")"""
+    text = format(Decimal(credits) / 1000, "f")
+    return (text.rstrip("0").rstrip(".") if "." in text else text) or "0"
 
 
 def make_handler(state: State):
@@ -101,7 +115,10 @@ def make_handler(state: State):
             if not self._auth():
                 return
             if u.path == "/api/v1/chat/credit":
-                return self._ok({"available": f"{state.balance / 1000:.3f}", "held": "0.000", "total": f"{state.balance / 1000:.3f}", "availableCredits": state.balance, "heldCredits": 0, "totalCredits": state.balance})
+                out = {"available": usd(state.balance), "held": "0", "total": usd(state.balance), "availableCredits": state.balance, "heldCredits": 0, "totalCredits": state.balance}
+                if not state.legacy:
+                    out.update({"availableUsd": usd(state.balance), "heldUsd": "0", "totalUsd": usd(state.balance)})
+                return self._ok(out)
             if u.path == "/api/v1/jobs/recordInfo":
                 tid = parse_qs(u.query).get("taskId", [""])[0]
                 with state.lock:
@@ -152,14 +169,20 @@ def make_handler(state: State):
                     state.fail_quote_once = False
                     return self._err(503, 503, "Busy", "")
                 credits = self._price(body)
-                return self._ok({"quoteId": f"q_{credits}_{uuid.uuid4().hex[:6]}", "model": body["model"], "estimatedCost": f"{credits / 1000:.3f}", "maxCharge": f"{credits / 1000:.3f}", "maxCredits": credits, "expectedCredits": credits, "currency": "USD", "quantity": "1", "unit": "image", "expiresAt": "2099-01-01T00:00:00Z"})
+                q = {"quoteId": f"q_{credits}_{uuid.uuid4().hex[:6]}", "model": body["model"], "estimatedCost": usd(credits), "maxCharge": usd(credits), "maxCredits": credits, "expectedCredits": credits, "currency": "USD", "quantity": "1", "unit": "image", "expiresAt": "2099-01-01T00:00:00Z"}
+                if not state.legacy:
+                    q.update({"maxChargeUsd": usd(credits), "expectedChargeUsd": usd(credits), "expectedCharge": usd(credits)})
+                return self._ok(q)
             if u.path == "/api/v1/jobs/createTask":
                 key = self.headers.get("Idempotency-Key", "")
                 with state.lock:
                     if key and key in state.idem:
                         t = state.tasks[state.idem[key]]
-                        return self._ok({"taskId": t["taskId"], "state": t["state"], "estimatedCost": f"{t['credits'] / 1000:.3f}", "estimatedCredits": t["credits"], "deadlineAt": "2099-01-01T00:00:00Z"}, 202)
+                        return self._ok(self._accepted(t["taskId"], t["state"], t["credits"]), 202)
+                    state.last_create = body
                     credits = self._price(body)
+                    if body.get("expectedCostUsd") is not None and Decimal(str(body["expectedCostUsd"])) != Decimal(credits) / 1000:
+                        return self._err(409, 40901, "Price changed")
                     if body.get("expectedCredits") is not None and int(body["expectedCredits"]) != credits:
                         return self._err(409, 40901, "Price changed")
                     if credits > state.balance:
@@ -175,7 +198,7 @@ def make_handler(state: State):
                     if key:
                         state.idem[key] = tid
                     state.balance -= credits
-                return self._ok({"taskId": tid, "state": "queued", "estimatedCost": f"{credits / 1000:.3f}", "estimatedCredits": credits, "deadlineAt": "2099-01-01T00:00:00Z"}, 202)
+                return self._ok(self._accepted(tid, "queued", credits), 202)
             if u.path == "/api/v1/common/download-url":
                 t = state.tasks.get(body.get("taskId", ""))
                 if not t:
@@ -183,6 +206,12 @@ def make_handler(state: State):
                 ext = "mp4" if t["video"] else "png"
                 return self._ok({"key": "out-1", "url": f"{self._base()}/blob/{t['taskId']}.{ext}", "expiresAt": "2099-01-01T00:00:00Z"})
             return self._err(404, 404, "Not found")
+
+        def _accepted(self, tid: str, task_state: str, credits: int) -> dict:
+            out = {"taskId": tid, "state": task_state, "estimatedCost": usd(credits), "estimatedCredits": credits, "deadlineAt": "2099-01-01T00:00:00Z"}
+            if not state.legacy:
+                out["estimatedCostUsd"] = usd(credits)
+            return out
 
         def _price(self, body: dict) -> int:
             m = body.get("model", "")
@@ -197,7 +226,7 @@ def make_handler(state: State):
                 t["state"] = "failed" if t["fail"] else "succeeded"
             elif t["polls"] == 1:
                 t["state"] = "running"
-            rec = {"taskId": t["taskId"], "model": t["model"], "state": t["state"], "cost": f"{t['credits'] / 1000:.3f}", "credits": t["credits"], "settled": False, "createdAt": "2026-10-16T00:00:00Z", "deadlineAt": "2099-01-01T00:00:00Z"}
+            rec = {"taskId": t["taskId"], "model": t["model"], "state": t["state"], "cost": usd(t["credits"]), "credits": t["credits"], "exactCredits": str(t["credits"]), "settled": False, "createdAt": "2026-10-16T00:00:00Z", "deadlineAt": "2099-01-01T00:00:00Z"}
             if t["state"] == "succeeded":
                 rec["settled"] = True
                 ext, mime = ("mp4", "video/mp4") if t["video"] else ("png", "image/png")
@@ -208,10 +237,13 @@ def make_handler(state: State):
                 if t["polls"] >= 3:
                     rec["settled"] = True
                     rec["credits"] = 0
-                    rec["cost"] = "0.00"
+                    rec["exactCredits"] = "0"
+                    rec["cost"] = "0"
                     if not t.get("refunded"):
                         t["refunded"] = True
                         state.balance += t["credits"]
+            if not state.legacy:
+                rec["costUsd"] = rec["cost"]
             return rec
 
     return H

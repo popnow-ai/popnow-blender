@@ -12,6 +12,7 @@ from . import capture, runtime
 from .ops import animate_seconds, estimate_for
 from ..core import models
 from ..core.client import mask_key
+from ..core.money import format_usd, parse_usd
 
 CATEGORY = "PopNow"
 STATE_ICON = {
@@ -32,7 +33,7 @@ STATE_ICON = {
 def _price_text(label: str, est) -> str:
     if est is None:
         return label
-    return f"{label} · {'~' if est.approx else '≈'}{est.credits} credits"
+    return f"{label} · {'~' if est.approx else '≈'}{format_usd(est.usd)}"
 
 
 def _blocked(layout) -> bool:
@@ -99,13 +100,14 @@ class POPNOW_PT_account(_Panel):
         elif b.get("error"):
             row.alert = True
             row.label(text=b["error"][:60], icon="ERROR")
-        elif "credits" in b:
-            held = f" · {b['held']} held" if b.get("held") else ""
-            row.label(text=f"{b['credits']:,} credits{held}", icon="FUND")
+        elif "usd" in b:
+            available, held = parse_usd(b.get("usd")), parse_usd(b.get("held_usd"))
+            held_text = f" · {format_usd(held)} held" if held else ""
+            row.label(text=f"API balance {format_usd(available)}{held_text}" if available is not None else "Balance unavailable", icon="FUND")
         else:
             row.label(text=f"Key {mask_key(runtime.api_key())}", icon="CHECKMARK")
         row.operator("popnow.refresh_balance", text="", icon="FILE_REFRESH")
-        row.operator("popnow.open_url", text="", icon="ADD").target = "pricing"
+        row.operator("popnow.open_url", text="", icon="ADD").target = "billing"
         if not b and status == "ok":
             # fetch the balance once when the panel is first drawn (background thread, does not block the UI)
             runtime.refresh_balance()
@@ -282,8 +284,9 @@ def draw_tasks(layout, context) -> None:
         box = layout.box()
         head = box.row(align=True)
         head.label(text=f"{job.workflow.title()} · {job.label}", icon=STATE_ICON.get(job.state, "DOT"))
-        if job.credits is not None and job.state in ("succeeded", "failed") and job.settled:
-            head.label(text=f"{job.credits} cr")
+        cost = job.cost()
+        if cost is not None and job.state in ("succeeded", "failed") and job.settled:
+            head.label(text=format_usd(cost))
         if not job.is_active:
             op = head.operator("popnow.job_remove", text="", icon="X", emboss=False)
             op.job_id = job.id
@@ -296,11 +299,12 @@ def draw_tasks(layout, context) -> None:
         if job.state == "awaiting_confirm":
             row = box.row(align=True)
             row.scale_y = 1.3
-            op = row.operator("popnow.job_confirm", text=f"Start · {job.max_credits} credits", icon="PLAY")
+            most, usual = job.max_charge(), job.expected_charge()
+            op = row.operator("popnow.job_confirm", text=f"Start · {format_usd(most)}" if most is not None else "Start", icon="PLAY")
             op.job_id = job.id
             row.operator("popnow.job_cancel", text="Cancel").job_id = job.id
-            if job.expected_credits is not None and job.expected_credits != job.max_credits:
-                box.label(text=f"Usually {job.expected_credits}. Unused credits come back.")
+            if usual is not None and usual != most:
+                box.label(text=f"Usually {format_usd(usual)}. The unused part goes back to your API balance.")
         elif job.is_active:
             row = box.row(align=True)
             label = "Cancel" if not job.task_id else "Stop waiting"

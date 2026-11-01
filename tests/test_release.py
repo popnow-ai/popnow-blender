@@ -30,7 +30,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(len(m["model"].split("/")), 3, m["model"])
             self.assertIn(m["workflow"], WORKFLOWS, m["model"])
             self.assertTrue(m["label"], m["model"])
-            self.assertIn("credits", m)
+            # a price table for local estimates: USD (preferred) or the deprecated credit table
+            self.assertTrue(m.get("usd") or m.get("credits"), m["model"])
             for media in m["media"].values():
                 self.assertIn("field", media)
         self.assertEqual({m["workflow"] for m in data["models"]}, WORKFLOWS)

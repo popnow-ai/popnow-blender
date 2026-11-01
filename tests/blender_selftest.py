@@ -3,7 +3,7 @@
 Usage (from the repository root):
     blender --background --factory-startup --python tests/blender_selftest.py            # fake backend, no cost
   POPNOW_API_KEY=sk-popnow-… blender --background --factory-startup --python tests/blender_selftest.py -- --live
-            # real API: runs only one cheapest Render (Qwen-Image 2.1 Turbo, about 15 credits)
+            # real API: runs only one cheapest Render (Qwen-Image 2.1 Turbo, about $0.015 from the API balance)
 
 Background mode has no event loop, so bpy.app.timers never fire on their own; runtime._tick() is called by hand here. A non-zero exit code means failure.
 """
@@ -95,7 +95,7 @@ def main() -> None:
     p.output_dir = os.path.join(tmp, "out")
     p.base_url = os.environ.get("POPNOW_API_BASE", p.base_url)
     p.open_results = False
-    p.auto_confirm_below = 0
+    p.auto_confirm_usd = 0.0
     build_scene()
     from popnow.ui import props as props_mod
 
@@ -136,7 +136,7 @@ def main() -> None:
     check("render job succeeded", job.state == "succeeded", job.status)
     check("render result loaded", any(img.filepath and job.task_id[-10:] in img.filepath for img in bpy.data.images), str(job.outputs))
     if LIVE:
-        print(f"live render: task {job.task_id}, {job.credits} credits, file {job.outputs}")
+        print(f"live render: task {job.task_id}, cost ${job.cost_usd or '?'}, file {job.outputs}")
         finish(srv, tmp)
         return
 

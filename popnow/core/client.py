@@ -4,7 +4,9 @@ Contract (see https://popnow.ai/docs and https://popnow.ai/docs/openapi):
 - Envelope {code, msg, data, request_id}; only code == 200 is success; branch on code on failure, never parse msg;
 - Auth: Authorization: Bearer sk-popnow-...;
 - Upload in three steps: common/upload-url -> PUT to the signed URL (copy the returned headers) -> files/{fileId}/commit, which yields popnow://f/...;
-- Tasks: jobs/quote -> jobs/createTask (with quoteId + expectedCredits + Idempotency-Key) -> poll jobs/recordInfo;
+- Money: exact USD from the API balance, as decimal strings (maxChargeUsd, estimatedCostUsd, costUsd, availableUsd). The credit fields
+  (maxCredits, credits, availableCredits...) are deprecated display projections at 1 credit = $0.001, read only as fallbacks (money.py);
+- Tasks: jobs/quote -> jobs/createTask (with quoteId + expectedCostUsd = the quote's maxChargeUsd + Idempotency-Key) -> poll jobs/recordInfo;
 - Output URLs are short-lived signed URLs; downloads do **not** send the key.
 """
 
@@ -25,7 +27,10 @@ from typing import Any, Callable
 
 DEFAULT_BASE_URL = "https://api.popnow.ai/api/v1"
 CONSOLE_URL = "https://popnow.ai/api/console"
-PRICING_URL = "https://popnow.ai/pricing"
+# API prices in USD; the API balance is separate from website credits
+PRICING_URL = "https://popnow.ai/api/pricing"
+# Where the API balance is funded
+BILLING_URL = "https://popnow.ai/api/console/billing"
 
 # Media types the upload endpoint accepts (a subset of UploadURLRequest.contentType)
 UPLOAD_TYPES = {
@@ -73,8 +78,10 @@ def friendly_message(err: ApiError) -> str:
     c = err.code
     if c == 401 or err.http == 401:
         return "Your API key was not accepted. Paste a valid key (sk-popnow-…) from the PopNow developer console."
-    if c in (402, 40201, 40202) or err.reason == "insufficient_credits":
-        return "Not enough credits. Top up at popnow.ai/pricing and try again."
+    if c == 40202:
+        return "This API key reached its spend cap. Raise it in the developer console, or wait for it to reset."
+    if c in (402, 40201) or err.reason in ("insufficient_credits", "insufficient_balance"):
+        return "Your PopNow API balance is too low for this task. Add funds at popnow.ai/api/console/billing and try again."
     if c == 40310:
         return "Verify your email address first (check the link we emailed you), then try again."
     if c == 40301:
@@ -251,18 +258,32 @@ class PopNowClient:
 
     # ---------- account ----------
     def balance(self) -> dict:
-        """Balance: availableCredits / heldCredits / totalCredits (whole credits)"""
+        """API balance in exact USD: availableUsd / heldUsd / totalUsd (decimal strings; the path name is historical).
+        The deprecated availableCredits / heldCredits / totalCredits may also be present."""
         return self.request("GET", "/chat/credit") or {}
 
     # ---------- tasks ----------
     def quote(self, model: str, input: dict) -> dict:
         return self.request("POST", "/jobs/quote", {"model": model, "input": input}, retries=2, idempotent=True)
 
-    def create_task(self, model: str, input: dict, *, quote_id: str | None = None, expected_credits: int | None = None, idempotency_key: str | None = None) -> dict:
+    def create_task(
+        self,
+        model: str,
+        input: dict,
+        *,
+        quote_id: str | None = None,
+        expected_cost_usd: str | None = None,
+        expected_credits: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Create a task. expected_cost_usd confirms the hold: pass the quote's maxChargeUsd string unchanged.
+        expected_credits is deprecated (whole credits); it is sent only when no USD amount is given."""
         body: dict[str, Any] = {"model": model, "input": input}
         if quote_id:
             body["quoteId"] = quote_id
-        if expected_credits is not None:
+        if expected_cost_usd:
+            body["expectedCostUsd"] = str(expected_cost_usd)
+        elif expected_credits is not None:
             body["expectedCredits"] = int(expected_credits)
         key = idempotency_key or f"blender-{uuid.uuid4()}"
         # With an idempotency key, retrying with the same key after a network error is safe (same key and body returns the original task, nothing is held twice)

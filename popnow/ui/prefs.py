@@ -1,13 +1,13 @@
-"""Add-on preferences: API key, API base URL, output folder, confirmation threshold.
+"""Add-on preferences: API key, API base URL, output folder, confirmation threshold (USD).
 
 The key is stored only in Blender's user preferences (userpref.blend), never in a .blend project file; the field is a password field.
 """
 
 import bpy
-from bpy.props import BoolProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 
 from . import runtime
-from ..core.client import CONSOLE_URL, DEFAULT_BASE_URL, mask_key
+from ..core.client import BILLING_URL, CONSOLE_URL, DEFAULT_BASE_URL, mask_key
 
 
 def _key_changed(self, context) -> None:
@@ -39,12 +39,23 @@ class POPNOW_AP_preferences(bpy.types.AddonPreferences):
         description="Folder for downloaded results. Empty: a popnow folder next to the .blend file (or the add-on folder for unsaved files)",
         subtype="DIR_PATH",
     )
+    auto_confirm_usd: FloatProperty(
+        name="Start without asking up to ($)",
+        description="Skip the confirm step when the quote holds at most this many US dollars from your API balance. 0 always asks",
+        default=0.0,
+        min=0.0,
+        max=5.0,
+        step=1,
+        precision=2,
+    )
+    # Deprecated: the 0.1.x threshold in credits (1 credit = $0.001). Not shown; moved to auto_confirm_usd once (runtime.auto_confirm_usd)
     auto_confirm_below: IntProperty(
-        name="Start without asking up to",
-        description="Skip the confirm step when the quote is at most this many credits. 0 always asks",
+        name="Start without asking up to (credits, deprecated)",
+        description="Deprecated: use the USD setting",
         default=0,
         min=0,
         max=5000,
+        options={"HIDDEN"},
     )
     open_results: BoolProperty(
         name="Show image results in an Image Editor",
@@ -58,6 +69,7 @@ class POPNOW_AP_preferences(bpy.types.AddonPreferences):
         row = col.row(align=True)
         row.prop(self, "api_key")
         row.operator("wm.url_open", text="Get API key", icon="URL").url = CONSOLE_URL
+        row.operator("wm.url_open", text="Add funds", icon="URL").url = BILLING_URL
         if self.api_key:
             status = runtime.key_status()
             if status == "malformed":
@@ -69,9 +81,9 @@ class POPNOW_AP_preferences(bpy.types.AddonPreferences):
             box.label(text="Online access is off in Preferences > System. PopNow needs it to work.", icon="ERROR")
         col.separator()
         col.prop(self, "output_dir")
-        col.prop(self, "auto_confirm_below")
+        col.prop(self, "auto_confirm_usd")
         col.prop(self, "open_results")
         col.separator()
         sub = col.column()
         sub.prop(self, "base_url")
-        sub.label(text="Results, quotes and charges use the same credits as popnow.ai.", icon="INFO")
+        sub.label(text="Quotes and charges are in US dollars from your PopNow API balance, separate from website credits.", icon="INFO")

@@ -4,8 +4,9 @@
 Source: the live catalog at GET https://api.popnow.ai/api/v1/models?includeSchema=1 (needs POPNOW_API_KEY),
 or a saved copy of that response passed with --source FILE.
 The add-on only ships the few endpoints its three workflows (clay render, clay animation, texture) use. For each one it
-keeps only the options the UI shows, where each input goes, how the prompt names an input, and the credit price table
-(for local estimates only; the amount actually held always comes from jobs/quote).
+keeps only the options the UI shows, where each input goes, how the prompt names an input, and the price tables: the
+USD table ("usd", decimal strings) when the catalog sends one, plus the deprecated credit table ("credits", 1 credit = $0.001)
+that older add-on versions read. Both are for local estimates only; the amount actually held always comes from jobs/quote.
 Fields the catalog response does not carry (for example typicalSeconds or the pricing mode) are kept from the
 current models.json.
 
@@ -162,7 +163,8 @@ def build(catalog: dict, previous: dict) -> dict:
             "tokens": tokens,
             "promptMax": props.get("prompt", {}).get("maxLength"),
             "clip": r.get("clip"),
-            "credits": e["credits"],
+            **({"usd": e["usd"]} if e.get("usd") else {}),
+            "credits": e.get("credits") or old.get("credits"),
             "pricing": schema.get("x-pricing") or old.get("pricing") or {},
         })
     snapshot = catalog.get("snapshot") if isinstance(catalog, dict) else None

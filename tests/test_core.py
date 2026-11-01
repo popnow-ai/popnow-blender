@@ -6,6 +6,7 @@ The imaging tests need numpy (bundled with Blender); they are skipped automatica
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -13,14 +14,15 @@ import tempfile
 import threading
 import time
 import unittest
+from decimal import Decimal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))  # make popnow.core importable (without importing the bpy part in popnow/__init__.py)
 sys.path.insert(0, HERE)
 
 from popnow.core import client as C  # noqa: E402
-from popnow.core import history, models, recipes  # noqa: E402
-from popnow.core.jobs import Job, JobRunner, MediaFile  # noqa: E402
+from popnow.core import history, models, money, recipes  # noqa: E402
+from popnow.core.jobs import Job, JobRunner, MediaFile, refund_note  # noqa: E402
 
 import fake_server  # noqa: E402
 
@@ -49,7 +51,8 @@ class FakeServerCase(unittest.TestCase):
 class ClientTests(FakeServerCase):
     def test_balance(self):
         b = self.client.balance()
-        self.assertEqual(b["availableCredits"], 5000)
+        self.assertEqual(b["availableUsd"], "5")
+        self.assertEqual(b["availableCredits"], 5000)  # deprecated field still parses
 
     def test_bad_key_gives_friendly_401(self):
         bad = C.PopNowClient("sk-popnow-wrong", self.base, sleep=lambda s: None)
@@ -66,25 +69,37 @@ class ClientTests(FakeServerCase):
     def test_quote_retries_on_503(self):
         self.state.fail_quote_once = True
         q = self.client.quote("bytedance/seedream-5.0-pro/edit", {"prompt": "x", "image_urls": ["https://example.com/a.png"]})
-        self.assertEqual(q["maxCredits"], 36)
+        self.assertEqual(q["maxChargeUsd"], "0.036")
 
     def test_create_task_is_idempotent(self):
         body = ("bytedance/seedream-5.0-pro/edit", {"prompt": "x", "image_urls": ["https://example.com/a.png"]})
-        a = self.client.create_task(*body, expected_credits=36, idempotency_key="blender-same")
-        b = self.client.create_task(*body, expected_credits=36, idempotency_key="blender-same")
+        a = self.client.create_task(*body, expected_cost_usd="0.036", idempotency_key="blender-same")
+        b = self.client.create_task(*body, expected_cost_usd="0.036", idempotency_key="blender-same")
         self.assertEqual(a["taskId"], b["taskId"])
+        self.assertEqual(a["estimatedCostUsd"], "0.036")
         self.assertEqual(self.state.balance, 4964)
+        self.assertEqual(self.state.last_create.get("expectedCostUsd"), "0.036")
+        self.assertNotIn("expectedCredits", self.state.last_create)
 
     def test_price_change_is_40901(self):
+        with self.assertRaises(C.ApiError) as cm:
+            self.client.create_task("bytedance/seedream-5.0-pro/edit", {"prompt": "x"}, expected_cost_usd="0.001")
+        self.assertEqual(cm.exception.code, 40901)
+
+    def test_deprecated_expected_credits_still_works(self):
+        res = self.client.create_task("bytedance/seedream-5.0-pro/edit", {"prompt": "x"}, expected_credits=36)
+        self.assertTrue(res["taskId"])
+        self.assertEqual(self.state.last_create.get("expectedCredits"), 36)
         with self.assertRaises(C.ApiError) as cm:
             self.client.create_task("bytedance/seedream-5.0-pro/edit", {"prompt": "x"}, expected_credits=1)
         self.assertEqual(cm.exception.code, 40901)
 
-    def test_insufficient_credits_message(self):
+    def test_insufficient_balance_message(self):
         self.state.balance = 1
         with self.assertRaises(C.ApiError) as cm:
             self.client.create_task("bytedance/seedream-5.0-pro/edit", {"prompt": "x"})
-        self.assertIn("Not enough credits", str(cm.exception))
+        self.assertIn("API balance is too low", str(cm.exception))
+        self.assertIn("popnow.ai/api/console/billing", str(cm.exception))
 
     def test_network_error(self):
         c = C.PopNowClient(KEY, "http://127.0.0.1:9/api/v1", sleep=lambda s: None)
@@ -125,19 +140,35 @@ class JobTests(FakeServerCase):
         while job.state != "awaiting_confirm" and time.time() < deadline:
             time.sleep(0.01)
         self.assertEqual(job.state, "awaiting_confirm")
-        self.assertEqual(job.max_credits, 36)
+        self.assertEqual(job.max_charge_usd, "0.036")
+        self.assertIn("up to $0.036", job.status)
         r.confirm()
         r.join(10)
         self.assertEqual(job.state, "succeeded", job.status)
         self.assertEqual(len(job.outputs), 1)
         with open(job.outputs[0], "rb") as f:
             self.assertTrue(f.read(8).startswith(b"\x89PNG"))
-        self.assertEqual(job.credits, 36)
+        self.assertEqual(job.cost_usd, "0.036")
+        self.assertEqual(job.status, "Done · $0.036")
         self.assertTrue(job.input["image_urls"][0].startswith("popnow://f/"))
+        # the hold is confirmed with the quote's exact maxChargeUsd, never with credits
+        self.assertEqual(self.state.last_create.get("expectedCostUsd"), "0.036")
+        self.assertNotIn("expectedCredits", self.state.last_create)
+
+    def test_legacy_server_without_usd_fields(self):
+        self.state.legacy = True
+        job = self.make_job()
+        r = _runner(self.client, job, [], auto_confirm_below_usd="1")
+        r.start()
+        r.join(10)
+        self.assertEqual(job.state, "succeeded", job.status)
+        # the legacy USD alias maxCharge confirms the hold; costs come from cost
+        self.assertEqual(self.state.last_create.get("expectedCostUsd"), "0.036")
+        self.assertEqual(job.cost(), Decimal("0.036"))
 
     def test_auto_confirm_below_threshold(self):
         job = self.make_job()
-        r = _runner(self.client, job, [], auto_confirm_below=50)
+        r = _runner(self.client, job, [], auto_confirm_below_usd=Decimal("0.05"))
         r.start()
         r.join(10)
         self.assertEqual(job.state, "succeeded")
@@ -163,8 +194,28 @@ class JobTests(FakeServerCase):
         r.join(10)
         self.assertEqual(job.state, "failed")
         self.assertTrue(job.refunded)
-        self.assertIn("credits were refunded", job.status)
+        self.assertIn("Nothing was charged; the hold was released", job.status)
+        self.assertEqual(job.cost_usd, "0")
         self.assertEqual(self.state.balance, 5000)
+
+    def test_auto_confirm_keeps_the_deprecated_credit_threshold(self):
+        job = self.make_job()
+        r = _runner(self.client, job, [], auto_confirm_below=50)  # 50 credits = $0.05 >= $0.036
+        self.assertEqual(r.auto_confirm_below_usd, Decimal("0.05"))
+        r.start()
+        r.join(10)
+        self.assertEqual(job.state, "succeeded")
+
+    def test_threshold_below_the_price_still_asks(self):
+        job = self.make_job()
+        r = _runner(self.client, job, [], auto_confirm_below_usd="0.035")
+        r.start()
+        deadline = time.time() + 5
+        while job.state != "awaiting_confirm" and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(job.state, "awaiting_confirm")
+        r.cancel()
+        r.join(5)
 
     def test_stop_after_submit_then_resume(self):
         job = self.make_job()
@@ -204,7 +255,22 @@ class JobTests(FakeServerCase):
         back = history.load(p)
         self.assertEqual(back[0].state, "stopped")  # a task that was running when closed comes back resumable
         self.assertEqual(back[0].task_id, "tsk_x")
-        self.assertNotIn("input", open(p).read())
+        with open(p, encoding="utf-8") as f:
+            self.assertNotIn("input", f.read())
+
+    def test_history_from_0_1_still_shows_amounts(self):
+        # entries written by 0.1.x have only credits; they load and show USD at 1 credit = $0.001
+        p = os.path.join(self.tmp, "h", "old.json")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        old = {"workflow": "render", "model": "m", "label": "L", "prompt": "p", "user_prompt": "p", "options": {}, "media": [], "out_dir": self.tmp, "state": "succeeded", "task_id": "tsk_old", "max_credits": 36, "expected_credits": 30, "credits": 36, "settled": True, "estimate": 36}
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "jobs": [old]}, f)
+        back = history.load(p)[0]
+        self.assertEqual(back.cost(), Decimal("0.036"))
+        self.assertEqual(back.max_charge(), Decimal("0.036"))
+        self.assertEqual(back.expected_charge(), Decimal("0.03"))
+        self.assertEqual(back.local_estimate(), Decimal("0.036"))
+        self.assertEqual(refund_note(back), "$0.036 was charged (this model bills refusals).")
 
 
 class ModelTests(unittest.TestCase):
@@ -213,20 +279,30 @@ class ModelTests(unittest.TestCase):
             self.assertTrue(models.models_for(w), w)
 
     def test_estimates_match_site_prices(self):
-        # matches the credit prices shown on popnow.ai
+        # matches the prices shown on popnow.ai, in exact USD (the deprecated .credits rounds up to $0.001)
         pro = models.get("bytedance/seedream-5.0-pro/edit")
-        self.assertEqual(models.estimate(pro, {"resolution": "1k"}).credits, 36)
+        self.assertEqual(models.estimate(pro, {"resolution": "1k"}).usd, Decimal("0.036"))
+        self.assertEqual(models.estimate(pro, {"resolution": "2k"}).usd, Decimal("0.072"))
         self.assertEqual(models.estimate(pro, {"resolution": "2k"}).credits, 72)
         mini = models.get("bytedance/seedance-2.0-mini/reference-to-video")
         e = models.estimate(mini, {"resolution": "480p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0])
-        self.assertEqual(e.credits, 110)  # (5 + 5) × 10.97 = 109.7 → 110
+        self.assertEqual(e.usd, Decimal("0.1097"))  # (5 + 5) × $0.01097, no float noise
+        self.assertEqual(e.credits, 110)
         self.assertFalse(e.approx)
         wan = models.get("alibaba/wan-3.0/reference-to-video")
-        self.assertEqual(models.estimate(wan, {"resolution": "720p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0]).credits, 900)
+        self.assertEqual(models.estimate(wan, {"resolution": "720p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0]).usd, Decimal("0.9"))
         turbo = models.get("alibaba/qwen-image-2.1-turbo/edit")
+        self.assertEqual(models.estimate(turbo, {}).usd, Decimal("0.0144"))
         self.assertEqual(models.estimate(turbo, {}).credits, 15)
         kling = models.get("kling/o3/video-edit")
-        self.assertEqual(models.estimate(kling, {"resolution": "720p"}, output_seconds=5).credits, 626)
+        self.assertEqual(models.estimate(kling, {"resolution": "720p"}, output_seconds=5).usd, Decimal("0.626"))
+
+    def test_estimate_prefers_a_usd_table(self):
+        raw = dict(models.get("bytedance/seedream-5.0-pro/edit").raw)
+        raw["usd"] = {"unit": "per_image", "perUnit": "0.0361", "currency": "USD", "rules": [{"when": {"*": "2k"}, "perUnit": "0.0722", "unit": "per_image"}]}
+        spec = models.ModelSpec(raw)
+        self.assertEqual(models.estimate(spec, {"resolution": "1k"}).usd, Decimal("0.0361"))
+        self.assertEqual(models.estimate(spec, {"resolution": "2k"}).usd, Decimal("0.0722"))
 
     def test_duration_options_drop_smart(self):
         mini = models.get("bytedance/seedance-2.0-mini/reference-to-video")
@@ -244,6 +320,42 @@ class ModelTests(unittest.TestCase):
             for spec in models.models_for(w):
                 self.assertTrue(spec.label, spec.model)
                 self.assertIsNotNone(models.estimate(spec, {}), spec.model)
+
+
+class MoneyTests(unittest.TestCase):
+    def test_parse_exact_usd_strings_only(self):
+        self.assertEqual(money.parse_usd("0.0405"), Decimal("0.0405"))
+        self.assertEqual(money.parse_usd("12.345678901"), Decimal("12.345678901"))
+        self.assertEqual(money.parse_usd("-1.5"), Decimal("-1.5"))
+        for bad in ("", "abc", "1e-3", "0.0000000001", ".5", "5.", 0.5, 5, None):
+            self.assertIsNone(money.parse_usd(bad), bad)
+        self.assertEqual(money.parse_usd("0.1") + money.parse_usd("0.2"), money.parse_usd("0.3"))
+
+    def test_credits_fallback(self):
+        self.assertEqual(money.credits_to_usd(36), Decimal("0.036"))
+        self.assertIsNone(money.credits_to_usd(-1))
+        self.assertIsNone(money.credits_to_usd(True))
+        self.assertIsNone(money.credits_to_usd("36"))
+
+    def test_format(self):
+        self.assertEqual(money.format_usd(Decimal("5")), "$5.00")
+        self.assertEqual(money.format_usd(Decimal("0.0405")), "$0.0405")
+        self.assertEqual(money.format_usd(Decimal("1250.5")), "$1,250.50")
+        self.assertEqual(money.format_usd(Decimal("-1.5")), "-$1.50")
+        self.assertEqual(money.format_usd(Decimal("0.000000001")), "$0.000000001")
+        self.assertEqual(money.format_usd(None), "?")
+        self.assertEqual(money.usd_text(Decimal("0.036000000")), "0.036")
+        self.assertEqual(money.first_usd_text("", None, " 0.040 "), "0.040")
+
+
+class VersionTests(unittest.TestCase):
+    def test_version_matches_the_manifest(self):
+        import tomllib
+
+        with open(os.path.join(HERE, "..", "popnow", "blender_manifest.toml"), "rb") as f:
+            manifest = tomllib.load(f)
+        with open(os.path.join(HERE, "..", "popnow", "ui", "runtime.py"), encoding="utf-8") as f:
+            self.assertIn(f'VERSION = "{manifest["version"]}"', f.read())
 
 
 class RecipeTests(unittest.TestCase):

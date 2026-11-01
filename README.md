@@ -17,14 +17,14 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![Website](https://img.shields.io/badge/site-popnow.ai-ff5a5f.svg)](https://popnow.ai/blender)
 
-Block out a scene with grey shapes, frame it with your camera, and PopNow paints it: a picture that keeps your composition, a short video that follows your camera move, or a tileable texture for the selected object. The add-on adds a **PopNow** tab to the 3D Viewport sidebar, uses your PopNow API key, and spends the same credits as [popnow.ai](https://popnow.ai). Make it pop.
+Block out a scene with grey shapes, frame it with your camera, and PopNow paints it: a picture that keeps your composition, a short video that follows your camera move, or a tileable texture for the selected object. The add-on adds a **PopNow** tab to the 3D Viewport sidebar, uses your PopNow API key, and pays in exact US dollars from your PopNow API balance (separate from website credits; add funds at [popnow.ai/api/console/billing](https://popnow.ai/api/console/billing)). Make it pop.
 
 | Clay render in | Finished frame out |
 | --- | --- |
 | ![Clay blockout of two figures at a cafe table](docs/images/blender-clay-duo-cafe.webp) | ![The same scene rendered as a sunlit cafe with two people](docs/images/blender-render-duo-cafe.webp) |
 | ![Clay bottle on a plinth](docs/images/blender-clay-product.webp) | ![The bottle rendered as a product shot](docs/images/blender-render-product.webp) |
 
-*Top: Seedream 5.0 Pro with two reference photos, 36 credits. Bottom: Nano Banana 2.1 with one product photo, 48 credits.*
+*Top: Seedream 5.0 Pro with two reference photos, $0.036. Bottom: Nano Banana 2.1 with one product photo, $0.048.*
 
 ## Quickstart
 
@@ -33,12 +33,12 @@ Block out a scene with grey shapes, frame it with your camera, and PopNow paints
    ```bash
    git clone https://github.com/popnow-ai/popnow-blender.git
    cd popnow-blender
-   python3 scripts/build_zip.py   # writes dist/popnow-blender-0.1.0.zip
+   python3 scripts/build_zip.py   # writes dist/popnow-blender-0.2.0.zip
    ```
 
 2. **Install it in Blender 4.2 or newer.** Drag the zip into the Blender window, or open **Edit > Preferences > Get Extensions**, click the menu in the top right, choose **Install from Disk** and pick the zip. Allow online access when Blender asks; the add-on needs it to send renders and download results.
 
-3. **Paste your API key.** Press **N** in the 3D Viewport, open the **PopNow** tab, click **Get API key**, create a key at [popnow.ai/api/console/keys](https://popnow.ai/api/console/keys) (it starts with `sk-popnow-`) and paste it. Your balance appears right away.
+3. **Paste your API key.** Press **N** in the 3D Viewport, open the **PopNow** tab, click **Get API key**, create a key at [popnow.ai/api/console/keys](https://popnow.ai/api/console/keys) (it starts with `sk-popnow-`) and paste it. Your API balance (USD) appears right away; the **+** button next to it opens [API billing](https://popnow.ai/api/console/billing) to add funds.
 
 Now write what you want to see, pick a style and a model, and click the button that shows the price.
 
@@ -50,7 +50,7 @@ Now write what you want to see, pick a style and a model, and click the button t
 | **Animate with AI** | A quick Workbench preview of your camera animation | An MP4 that keeps your camera move, blocking and timing, ready to drop into the Video Sequencer |
 | **Texture** | A description of a material and a style (photo scan, hand-painted, toon) | A square texture with blended edges and a box-projected material, applied to the selected objects |
 
-- **Price first, then confirm.** The panel shows a live estimate; before anything starts, the add-on gets an exact quote from `jobs/quote` and asks you to confirm. Failed generations are refunded automatically.
+- **Price first, then confirm.** The panel shows a live estimate in US dollars; before anything starts, the add-on gets an exact quote from `jobs/quote` and asks you to confirm the maximum (`maxChargeUsd`). Failed generations are not charged; their hold is released automatically.
 - **Blender never freezes.** Uploads, polling and downloads run in a background thread; progress shows in the **Tasks** panel (also in the Image Editor sidebar).
 - **Resume anything.** Closing Blender or pressing stop only stops waiting; started tasks finish on PopNow and can be resumed from the Tasks panel.
 - **No extra Python packages, no GPU.** Generation runs on PopNow; your machine only renders a quick Workbench clay image (plus a one-sample Cycles pass for depth, normals or line art).
@@ -58,27 +58,27 @@ Now write what you want to see, pick a style and a model, and click the button t
 
 ### Supported models
 
-Prices are in credits (1 credit = $0.001), match popnow.ai, and are the lowest tier of each model. The live catalog is at `GET https://api.popnow.ai/api/v1/models`.
+Prices are in US dollars, match [API pricing](https://popnow.ai/api/pricing), and are a typical low tier of each model. The live catalog is at `GET https://api.popnow.ai/api/v1/models`.
 
 | Workflow | Model | Good for | From |
 | --- | --- | --- | --- |
-| Render | Seedream 5.0 Pro | Balanced; follows your layout closely | 36 credits per 1K image |
-| Render | Seedream 5.0 Flash | Faster and cheaper | 29 credits |
-| Render | Nano Banana 2.1 | Best with many reference images | 48 credits |
-| Render | GPT Image 2 | Strong text and fine detail | 43 credits |
-| Render | Qwen-Image 2.1 Turbo | Cheapest drafts | 15 credits |
-| Render | FLUX.1 dev ControlNet | Exact shapes from a depth or line pass; no reference images | 36 credits |
-| Animate | Seedance 2.0 Mini | Cheapest, good for drafts | 110 credits per 480p 5 s |
-| Animate | Seedance 2.0 Fast | Balance of price and quality | 226 credits |
-| Animate | Seedance 2.0 | Higher quality, up to 4K | 431 credits |
-| Animate | Seedance 2.5 | Follows clay previz best | 738 credits |
-| Animate | Wan 3.0 | Strong motion, up to 1080p | 450 credits |
-| Animate | Kling O3 Restyle | Repaints your clip frame by frame, 3 to 10 s | 626 credits per 720p 5 s |
-| Animate | Wan 2.2 Animate | Motion control: your character copies the clay figure | 265 credits |
-| Texture | Seedream 5.0 Flash | Fast and cheap | 29 credits per 1K image |
-| Texture | Qwen-Image 2.1 Turbo | Cheapest | 15 credits |
-| Texture | Seedream 5.0 Pro | Most detail | 36 credits |
-| Texture | Nano Banana 2.1 | Up to 4K | 48 credits |
+| Render | Seedream 5.0 Pro | Balanced; follows your layout closely | $0.036 per 1K image |
+| Render | Seedream 5.0 Flash | Faster and cheaper | $0.029 |
+| Render | Nano Banana 2.1 | Best with many reference images | $0.048 |
+| Render | GPT Image 2 | Strong text and fine detail | $0.04254 (1:1, medium) |
+| Render | Qwen-Image 2.1 Turbo | Cheapest drafts | $0.0144 |
+| Render | FLUX.1 dev ControlNet | Exact shapes from a depth or line pass; no reference images | $0.036 |
+| Animate | Seedance 2.0 Mini | Cheapest, good for drafts | $0.1097 per 480p 5 s |
+| Animate | Seedance 2.0 Fast | Balance of price and quality | $0.2254 |
+| Animate | Seedance 2.0 | Higher quality, up to 4K | $0.431 |
+| Animate | Seedance 2.5 | Follows clay previz best | $0.738 |
+| Animate | Wan 3.0 | Strong motion, up to 1080p | $0.45 |
+| Animate | Kling O3 Restyle | Repaints your clip frame by frame, 3 to 10 s | $0.626 per 720p 5 s |
+| Animate | Wan 2.2 Animate | Motion control: your character copies the clay figure | $0.265 |
+| Texture | Seedream 5.0 Flash | Fast and cheap | $0.029 per 1K image |
+| Texture | Qwen-Image 2.1 Turbo | Cheapest | $0.0144 |
+| Texture | Seedream 5.0 Pro | Most detail | $0.036 |
+| Texture | Nano Banana 2.1 | Up to 4K | $0.048 |
 
 ## Usage
 
@@ -110,7 +110,7 @@ Open **Edit > Preferences > Add-ons > PopNow AI Render** (or the gear icon in th
 | --- | --- | --- |
 | API key | empty | Your `sk-popnow-...` key. When empty, the `POPNOW_API_KEY` environment variable is used |
 | Save results to | empty | Folder for downloads. Empty: `popnow/` next to the saved `.blend`, or the add-on's user folder for unsaved files |
-| Start without asking up to | 0 | Skip the confirm step when the quote is at most this many credits. 0 always asks |
+| Start without asking up to ($) | 0.00 | Skip the confirm step when the quote holds at most this many US dollars. 0 always asks. A value set in credits by 0.1.x is moved over once (1 credit = $0.001, rounded down to the cent) |
 | Show image results in an Image Editor | on | Open finished renders in an Image Editor (a new window if none is open) |
 | API base URL | `https://api.popnow.ai/api/v1` | Change only for local testing |
 
@@ -122,7 +122,7 @@ Blender's **Preferences > System > Network > Allow Online Access** must be on; w
 | --- | --- | --- |
 | The PopNow tab asks for a key | No key saved yet, or it was revoked | Create a key in the [API console](https://popnow.ai/api/console/keys) and paste it |
 | The add-on cannot reach PopNow | **Allow Online Access** is off, or a firewall blocks `api.popnow.ai` | Turn it on in Preferences > System > Network |
-| Not enough credits | The quote is higher than your balance | [Top up](https://popnow.ai/pricing), or pick a cheaper model, lower resolution or shorter clip |
+| Your PopNow API balance is too low | The quote is higher than your API balance | [Add funds](https://popnow.ai/api/console/billing), or pick a cheaper model, lower resolution or shorter clip |
 | The video ignores the clay figures | The model follows prompts more than previz | Use Seedance 2.5, or Wan 2.2 Animate for a character |
 | Shapes drift from your layout | Image models reinterpret outlines | Use FLUX.1 dev ControlNet with a depth or line-art pass |
 | "Stop waiting" but the task keeps running | A started task runs to the end on PopNow | Resume later from the Tasks panel to download it |
@@ -134,7 +134,7 @@ Each task in the Tasks panel has a copy button for its task ID; include it when 
 The add-on is an ordinary [PopNow API](https://popnow.ai/docs) client written with the Python standard library (`popnow/core/client.py`):
 
 1. `POST /api/v1/common/upload-url` → `PUT` the bytes to the signed URL → `POST /api/v1/files/{fileId}/commit`, which returns a `popnow://f/...` URI.
-2. `POST /api/v1/jobs/quote` for the exact price, then `POST /api/v1/jobs/createTask` with `quoteId`, `expectedCredits` and an `Idempotency-Key`.
+2. `POST /api/v1/jobs/quote` for the exact price (`maxChargeUsd`), then `POST /api/v1/jobs/createTask` with `quoteId`, `expectedCostUsd` (that `maxChargeUsd`, unchanged) and an `Idempotency-Key`. Amounts are exact USD decimal strings, handled with `decimal.Decimal` (`popnow/core/money.py`); the deprecated credit fields are read only when a response has no USD field.
 3. Poll `GET /api/v1/jobs/recordInfo?taskId=...` until the task is `succeeded`, `failed` or `expired`, then download `output.assets[].url`.
 
 If you script Blender yourself or run a render farm, you can make the same calls directly; see the [PopNow API reference](https://popnow.ai/docs/openapi) and [popnow-api](https://github.com/popnow-ai/popnow-api).
@@ -182,7 +182,7 @@ Yes. **Animate with AI** renders a quick Workbench preview of your camera animat
 
 ### Is the Blender AI render add-on free?
 
-The add-on is free and open source (GPL-3.0-or-later). Each generation uses PopNow credits from the same balance as popnow.ai, sold as one-time credit packs with no subscription. The price is shown before you start, and failed generations are refunded.
+The add-on is free and open source (GPL-3.0-or-later). Each generation is paid in US dollars from your PopNow API balance, with no subscription; fund it at [popnow.ai/api/console/billing](https://popnow.ai/api/console/billing). The API balance is separate from website credits. The price is shown before you start, and failed generations are not charged.
 
 ### Which Blender versions does it support?
 
@@ -202,10 +202,10 @@ No. Only the rendered clay image or preview clip and the reference images you ch
 
 ## Links
 
-- Website: [popnow.ai](https://popnow.ai) · Blender add-on page: [popnow.ai/blender](https://popnow.ai/blender) · Pricing: [popnow.ai/pricing](https://popnow.ai/pricing)
+- Website: [popnow.ai](https://popnow.ai) · Blender add-on page: [popnow.ai/blender](https://popnow.ai/blender) · API pricing: [popnow.ai/api/pricing](https://popnow.ai/api/pricing) · Add funds: [popnow.ai/api/console/billing](https://popnow.ai/api/console/billing)
 - Docs: [popnow.ai/docs](https://popnow.ai/docs) · Blender guide: [popnow.ai/docs/blender](https://popnow.ai/docs/blender) · API reference: [popnow.ai/docs/openapi](https://popnow.ai/docs/openapi)
-- MCP server for ChatGPT, Claude and other AI assistants: [popnow.ai/mcp](https://popnow.ai/mcp)
-- Other PopNow repositories: [popnow-mcp](https://github.com/popnow-ai/popnow-mcp) · [popnow-skills](https://github.com/popnow-ai/popnow-skills) · [popnow-python](https://github.com/popnow-ai/popnow-python) · [popnow-js](https://github.com/popnow-ai/popnow-js) · [popnow-api](https://github.com/popnow-ai/popnow-api) · [popnow-blender](https://github.com/popnow-ai/popnow-blender)
+- Developer MCP server for Claude Code, Cursor and other coding agents (API key, USD): `https://api.popnow.ai/api/v1/mcp` · setup at [popnow.ai/api/mcp](https://popnow.ai/api/mcp) · Agent skills: [popnow.ai/api/skills](https://popnow.ai/api/skills)
+- Other PopNow repositories: [popnow-api-mcp](https://github.com/popnow-ai/popnow-api-mcp) · [popnow-skills](https://github.com/popnow-ai/popnow-skills) · [popnow-python](https://github.com/popnow-ai/popnow-python) · [popnow-js](https://github.com/popnow-ai/popnow-js) · [popnow-api](https://github.com/popnow-ai/popnow-api) · [popnow-blender](https://github.com/popnow-ai/popnow-blender)
 
 ## License
 

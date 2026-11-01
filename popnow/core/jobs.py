@@ -14,9 +14,11 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from typing import Any, Callable
 
 from .client import ApiError, NetworkError, PopNowClient, friendly_message
+from .money import credits_to_usd, first_usd, first_usd_text, format_usd, parse_usd, usd_text
 
 # Task states
 ACTIVE = ("uploading", "quoting", "awaiting_confirm", "submitting", "queued", "running", "downloading")
@@ -59,12 +61,19 @@ class Job:
     status: str = "Preparing…"
     progress: float = 0.0
     quote_id: str = ""
+    # USD amounts are exact decimal strings from the API ("" when unknown); see money.py
+    max_charge_usd: str = ""  # the quote's maxChargeUsd, sent back unchanged as expectedCostUsd
+    expected_charge_usd: str = ""  # the quote's typical charge (informational)
+    estimate_usd: str = ""  # local estimate shown before the quote
+    task_id: str = ""
+    cost_usd: str = ""  # costUsd: the hold until settled, then the final charge
+    settled: bool = False
+    # Deprecated credit amounts (1 credit = $0.001): kept so history from 0.1.x still loads and as a fallback for
+    # servers that send no USD field. Read amounts through max_charge() / expected_charge() / cost() instead.
     max_credits: int | None = None
     expected_credits: int | None = None
     estimate: int | None = None
-    task_id: str = ""
     credits: int | None = None
-    settled: bool = False
     refunded: bool | None = None
     error: str = ""
     error_code: str = ""
@@ -88,6 +97,21 @@ class Job:
     @property
     def resumable(self) -> bool:
         return self.state == "stopped" and bool(self.task_id)
+
+    def max_charge(self) -> Decimal | None:
+        """Most the quote can hold, in USD"""
+        return first_usd(self.max_charge_usd) if self.max_charge_usd else credits_to_usd(self.max_credits)
+
+    def expected_charge(self) -> Decimal | None:
+        """Typical charge of the quote, in USD"""
+        return first_usd(self.expected_charge_usd) if self.expected_charge_usd else credits_to_usd(self.expected_credits)
+
+    def cost(self) -> Decimal | None:
+        """Final charge once settled, otherwise the hold, in USD"""
+        return first_usd(self.cost_usd) if self.cost_usd else credits_to_usd(self.credits)
+
+    def local_estimate(self) -> Decimal | None:
+        return first_usd(self.estimate_usd) if self.estimate_usd else credits_to_usd(self.estimate)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -113,10 +137,19 @@ class Job:
 
 def refund_note(job: Job) -> str:
     if not job.settled:
-        return "The held credits will be refunded."
-    if job.credits == 0:
-        return "Your credits were refunded."
-    return f"{job.credits} credits were charged (this model bills refusals)."
+        return "The held amount will be released to your API balance."
+    cost = job.cost()
+    if cost is None:
+        return "The final charge is listed in the PopNow API console."
+    if cost == 0:
+        return "Nothing was charged; the hold was released to your API balance."
+    return f"{format_usd(cost)} was charged (this model bills refusals)."
+
+
+def _record_cost(rec: dict) -> str:
+    """costUsd, then its legacy alias cost, then the deprecated credits"""
+    exact = first_usd_text(rec.get("costUsd"), rec.get("cost"))
+    return exact or usd_text(credits_to_usd(_int(rec.get("credits"))))
 
 
 class JobRunner(threading.Thread):
@@ -129,6 +162,7 @@ class JobRunner(threading.Thread):
         notify: Callable[[Job], None],
         *,
         build_input: Callable[[Job, dict[str, list[str]]], dict] | None = None,
+        auto_confirm_below_usd: Decimal | str | None = None,
         auto_confirm_below: int = 0,
         sleep: Callable[[float], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -139,7 +173,13 @@ class JobRunner(threading.Thread):
         self.job = job
         self.notify = notify
         self.build_input = build_input
-        self.auto_confirm_below = auto_confirm_below
+        # Skip the confirm step when the quote holds at most this much (USD). auto_confirm_below is the deprecated
+        # threshold in whole credits from 0.1.x, used only when no USD threshold is given.
+        if isinstance(auto_confirm_below_usd, str):
+            auto_confirm_below_usd = parse_usd(auto_confirm_below_usd)
+        if auto_confirm_below_usd is None:
+            auto_confirm_below_usd = credits_to_usd(auto_confirm_below) or Decimal(0)
+        self.auto_confirm_below_usd: Decimal = auto_confirm_below_usd
         self._confirm = threading.Event()
         self._cancel = threading.Event()
         self._sleep_fn = sleep
@@ -239,14 +279,21 @@ class JobRunner(threading.Thread):
             job.input = self.build_input(job, job.uploaded)
         self._set(state="quoting", status="Getting a price…", progress=0.22)
         q = self.client.quote(job.model, job.input)
-        self._set(quote_id=q.get("quoteId", ""), max_credits=_int(q.get("maxCredits")), expected_credits=_int(q.get("expectedCredits")))
+        self._set(
+            quote_id=q.get("quoteId", ""),
+            max_charge_usd=first_usd_text(q.get("maxChargeUsd"), q.get("maxCharge"), q.get("estimatedCost")),
+            expected_charge_usd=first_usd_text(q.get("expectedChargeUsd"), q.get("expectedCharge")),
+            max_credits=_int(q.get("maxCredits")),
+            expected_credits=_int(q.get("expectedCredits")),
+        )
 
     def _await_confirm(self) -> bool:
         job = self.job
-        mc = job.max_credits or 0
-        if self.auto_confirm_below > 0 and mc <= self.auto_confirm_below:
+        mc = job.max_charge()
+        if self.auto_confirm_below_usd > 0 and mc is not None and mc <= self.auto_confirm_below_usd:
             return True
-        self._set(state="awaiting_confirm", status=f"Ready: up to {mc} credits. Confirm to start.", progress=0.25)
+        price = f"up to {format_usd(mc)}" if mc is not None else "price unknown"
+        self._set(state="awaiting_confirm", status=f"Ready: {price}. Confirm to start.", progress=0.25)
         # A quote is valid for 5 minutes; no confirmation after 4.5 minutes counts as giving up (nothing charged), the user can click again
         deadline = self._clock() + 270
         while not self._confirm.is_set():
@@ -264,17 +311,18 @@ class JobRunner(threading.Thread):
         job = self.job
         self._set(state="submitting", status="Starting…", progress=0.28)
         try:
-            res = self.client.create_task(job.model, job.input, quote_id=job.quote_id or None, expected_credits=job.max_credits, idempotency_key=f"blender-{job.id}")
+            res = self.client.create_task(job.model, job.input, quote_id=job.quote_id or None, expected_cost_usd=job.max_charge_usd or None, expected_credits=job.max_credits, idempotency_key=f"blender-{job.id}")
         except ApiError as e:
             if e.code == 40901:
                 # Quote expired or price changed: quote again and ask the user to confirm again (never charge the new price automatically)
                 self._quote()
                 if not self._await_confirm():
                     return
-                res = self.client.create_task(job.model, job.input, quote_id=job.quote_id or None, expected_credits=job.max_credits, idempotency_key=f"blender-{job.id}-r")
+                res = self.client.create_task(job.model, job.input, quote_id=job.quote_id or None, expected_cost_usd=job.max_charge_usd or None, expected_credits=job.max_credits, idempotency_key=f"blender-{job.id}-r")
             else:
                 raise
-        self._set(task_id=res.get("taskId", ""), state="queued", status="Queued on PopNow", credits=_int(res.get("estimatedCredits")), deadline_at=res.get("deadlineAt", ""))
+        held = first_usd_text(res.get("estimatedCostUsd"), res.get("estimatedCost")) or usd_text(credits_to_usd(_int(res.get("estimatedCredits"))))
+        self._set(task_id=res.get("taskId", ""), state="queued", status="Queued on PopNow", cost_usd=held, credits=_int(res.get("estimatedCredits")), deadline_at=res.get("deadlineAt", ""))
 
     def _poll_and_fetch(self) -> None:
         job = self.job
@@ -285,6 +333,7 @@ class JobRunner(threading.Thread):
         while True:
             rec = self.client.record(job.task_id)
             state = rec.get("state", "")
+            job.cost_usd = _record_cost(rec)
             job.credits = _int(rec.get("credits"))
             job.settled = bool(rec.get("settled"))
             elapsed = self._clock() - start
@@ -301,16 +350,18 @@ class JobRunner(threading.Thread):
             interval = 2.0 if elapsed < 20 else (4.0 if elapsed < 120 else 6.0)
         state = rec.get("state")
         if state != "succeeded":
-            # Failed: wait for settlement (usually a few seconds) so we can tell the user whether credits were refunded
+            # Failed: wait for settlement (usually a few seconds) so we can tell the user whether the hold was released
             tries = 0
             while not rec.get("settled") and tries < 5:
                 if self._wait(2.0):
                     break
                 tries += 1
                 rec = self.client.record(job.task_id)
+            job.cost_usd = _record_cost(rec)
             job.credits = _int(rec.get("credits"))
             job.settled = bool(rec.get("settled"))
-            job.refunded = job.settled and job.credits == 0
+            cost = job.cost()
+            job.refunded = job.settled and cost is not None and cost == 0
             reason = rec.get("errorMessage") or ("The task expired." if state == "expired" else "Generation failed.")
             msg = f"{reason} {refund_note(job)}"
             self._set(state="failed", status=msg, error=msg, error_code=rec.get("errorCode", ""), finished_at=time.time(), progress=1.0)
@@ -346,8 +397,12 @@ class JobRunner(threading.Thread):
                     raise
             outputs.append(dest)
             meta.append({k: a.get(k) for k in ("mime", "width", "height", "durationSeconds", "role") if a.get(k) is not None})
+        job.cost_usd = _record_cost(rec)
         job.credits = _int(rec.get("credits"))
-        self._set(state="succeeded", status=f"Done · {job.credits if job.credits is not None else '?'} credits", outputs=outputs, output_meta=meta, progress=1.0, finished_at=time.time())
+        job.settled = bool(rec.get("settled"))
+        cost = job.cost()
+        done = f"Done · {format_usd(cost)}" if cost is not None else "Done"
+        self._set(state="succeeded", status=done, outputs=outputs, output_meta=meta, progress=1.0, finished_at=time.time())
 
 
 def _int(v: Any) -> int | None:

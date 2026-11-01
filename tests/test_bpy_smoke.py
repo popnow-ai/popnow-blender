@@ -147,7 +147,7 @@ class BpySmokeTest(unittest.TestCase):
 
     def context(self, selected=()):
         scene = types.SimpleNamespace(popnow=build_scene_props(self.props_mod), camera=object(), frame_start=1, render=types.SimpleNamespace(fps=24, fps_base=1.0, resolution_x=1920, resolution_y=1080))
-        prefs = types.SimpleNamespace(api_key="sk-popnow-" + "a" * 48, base_url="http://127.0.0.1:9/api/v1", output_dir=os.path.join(self.tmp, "out"), auto_confirm_below=0, open_results=False)
+        prefs = types.SimpleNamespace(api_key="sk-popnow-" + "a" * 48, base_url="http://127.0.0.1:9/api/v1", output_dir=os.path.join(self.tmp, "out"), auto_confirm_usd=0.0, auto_confirm_below=0, open_results=False)
         addons = {self.runtime.ADDON_ID: types.SimpleNamespace(preferences=prefs)}
         ctx = types.SimpleNamespace(scene=scene, selected_objects=list(selected), preferences=types.SimpleNamespace(addons=addons), window_manager=types.SimpleNamespace(windows=[], progress_begin=lambda *a: None, progress_update=lambda *a: None, progress_end=lambda: None))
         self.bpy.context = ctx
@@ -176,11 +176,12 @@ class BpySmokeTest(unittest.TestCase):
 
     def test_panels_draw_without_errors(self):
         ctx = self.context()
-        self.runtime.BALANCE.update({"credits": 1234, "held": 6, "at": time.time()})
+        self.runtime.BALANCE.update({"usd": "12.345", "held_usd": "0.006", "at": time.time()})
         from popnow.core.jobs import Job
 
         # one task in each state, covering every branch of the Tasks panel
-        for state, extra in [("awaiting_confirm", {"max_credits": 6, "expected_credits": 5}), ("running", {"task_id": "tsk_1", "progress": 0.4}), ("succeeded", {"task_id": "tsk_2", "outputs": ["/x.png"], "credits": 6, "settled": True}), ("failed", {"task_id": "tsk_3", "error_code": "content_rejected", "settled": True, "credits": 0}), ("stopped", {"task_id": "tsk_4"})]:
+        # (the last two entries look like task history written by 0.1.x, with credits only)
+        for state, extra in [("awaiting_confirm", {"max_charge_usd": "0.006", "expected_charge_usd": "0.005"}), ("running", {"task_id": "tsk_1", "progress": 0.4}), ("succeeded", {"task_id": "tsk_2", "outputs": ["/x.png"], "cost_usd": "0.006", "settled": True}), ("failed", {"task_id": "tsk_3", "error_code": "content_rejected", "settled": True, "cost_usd": "0"}), ("stopped", {"task_id": "tsk_4"}), ("awaiting_confirm", {"max_credits": 6, "expected_credits": 5}), ("succeeded", {"task_id": "tsk_5", "outputs": ["/y.png"], "credits": 6, "settled": True})]:
             for wf in ("render", "animate", "texture"):
                 j = Job(workflow=wf, model="m", label="L", prompt="p", user_prompt="a prompt", options={}, media=[], out_dir=self.tmp)
                 j.state = state
@@ -214,9 +215,26 @@ class BpySmokeTest(unittest.TestCase):
             est = self.ops.estimate_for(wf, p)
             self.assertIsNotNone(est, wf)
             self.assertGreater(est.credits, 0)
-        # defaults: Seedream 5.0 Pro 2K = 72; Seedance 2.0 Mini default 720p 5 s + 5 s clay clip = 236
+        # defaults: Seedream 5.0 Pro 2K = $0.072; Seedance 2.0 Mini default 720p 5 s + 5 s clay clip = $0.2359 (236 credits rounded up)
+        from decimal import Decimal
+
+        self.assertEqual(self.ops.estimate_for("render", p).usd, Decimal("0.072"))
+        self.assertEqual(self.ops.estimate_for("animate", p).usd, Decimal("0.2359"))
         self.assertEqual(self.ops.estimate_for("render", p).credits, 72)
         self.assertEqual(self.ops.estimate_for("animate", p).credits, 236)
+
+    def test_auto_confirm_threshold_moves_from_credits_to_usd(self):
+        from decimal import Decimal
+
+        ctx = self.context()
+        p = ctx.preferences.addons[self.runtime.ADDON_ID].preferences
+        self.assertEqual(self.runtime.auto_confirm_usd(), Decimal(0))
+        p.auto_confirm_usd = 0.25
+        self.assertEqual(self.runtime.auto_confirm_usd(), Decimal("0.25"))
+        # a 0.1.x preference of 500 credits becomes $0.50 once, and the old value is cleared
+        p.auto_confirm_usd, p.auto_confirm_below = 0.0, 500
+        self.assertEqual(self.runtime.auto_confirm_usd(), Decimal("0.50"))
+        self.assertEqual((p.auto_confirm_usd, p.auto_confirm_below), (0.5, 0))
 
     def test_texture_operator_builds_job(self):
         ctx = self.context(selected=[types.SimpleNamespace(name="Cube", data=types.SimpleNamespace(materials=[]))])

@@ -10,7 +10,8 @@ from bpy.props import IntProperty, StringProperty
 from . import capture, results, runtime
 from .props import option_value
 from ..core import models, recipes
-from ..core.client import CONSOLE_URL, PRICING_URL
+from ..core.client import BILLING_URL, CONSOLE_URL, PRICING_URL
+from ..core.money import usd_text
 from ..core.jobs import Job, MediaFile
 
 MAX_INPUT_DIRS = 30
@@ -181,7 +182,7 @@ class POPNOW_OT_render(_Base):
         prompt = recipes.render_prompt(spec, props.render_prompt, props.render_style, pass_kind=pass_kind if not spec.media("control") else "none", n_refs=len(refs), source="render" if props.render_source == "RENDER" else "clay")
         job = Job(id=job_id, workflow="render", model=spec.model, label=spec.label, prompt=prompt, user_prompt=props.render_prompt, options=render_options(spec, props, size), media=media, out_dir=runtime.output_dir())
         est = estimate_for("render", props, size)
-        job.estimate = est.credits if est else None
+        job.estimate_usd = usd_text(est.usd) if est else ""
         job.extra.update({"camera": camera_name, "aspect": list(aspect), "clay": clay})
         self._start(job, spec)
         return {"FINISHED"}
@@ -221,7 +222,7 @@ class POPNOW_OT_animate(_Base):
         prompt = recipes.animate_prompt(spec, props.anim_prompt, props.anim_style, n_refs=len(refs))
         job = Job(id=job_id, workflow="animate", model=spec.model, label=spec.label, prompt=prompt, user_prompt=props.anim_prompt, options=animate_options(spec, props, size), media=media, out_dir=runtime.output_dir())
         est = estimate_for("animate", props, size)
-        job.estimate = est.credits if est else None
+        job.estimate_usd = usd_text(est.usd) if est else ""
         job.extra.update({"clip": clip, "seconds": real, "camera": context.scene.camera.name if context.scene.camera else ""})
         self._start(job, spec)
         return {"FINISHED"}
@@ -250,7 +251,7 @@ class POPNOW_OT_texture(_Base):
         targets = [o.name for o in context.selected_objects if hasattr(getattr(o, "data", None), "materials")] if props.tex_apply else []
         job = Job(workflow="texture", model=spec.model, label=spec.label, prompt=recipes.texture_prompt(props.tex_prompt, props.tex_style), user_prompt=props.tex_prompt, options=opts, media=[], out_dir=runtime.output_dir())
         est = estimate_for("texture", props)
-        job.estimate = est.credits if est else None
+        job.estimate_usd = usd_text(est.usd) if est else ""
         job.extra.update({"targets": targets, "apply": bool(props.tex_apply), "seamless": bool(props.tex_seamless), "scale": float(props.tex_scale)})
         self._start(job, spec)
         return {"FINISHED"}
@@ -270,7 +271,7 @@ class _JobOp(bpy.types.Operator):
 class POPNOW_OT_job_confirm(_JobOp):
     bl_idname = "popnow.job_confirm"
     bl_label = "Start"
-    bl_description = "Start this generation. Credits are held now and the unused part is returned when it finishes"
+    bl_description = "Start this generation. The price is held from your API balance now and the unused part is released when it finishes"
 
     def execute(self, context):
         runtime.confirm(self.job_id)
@@ -318,6 +319,7 @@ class POPNOW_OT_job_rerun(_JobOp):
         spec = models.get(old.model)
         job = Job(workflow=old.workflow, model=old.model, label=old.label, prompt=old.prompt, user_prompt=old.user_prompt, options=dict(old.options), media=[MediaFile(m.path, m.slot, m.seconds) for m in old.media], out_dir=runtime.output_dir())
         job.extra = {k: v for k, v in old.extra.items() if not k.startswith(("apply", "texture_path", "seam"))}
+        job.estimate_usd = old.estimate_usd
         job.estimate = old.estimate
         job.extra["typical_seconds"] = spec.typical_seconds if spec else 60
         runtime.start(job, build_input=_build_input)
@@ -366,7 +368,7 @@ class POPNOW_OT_history_clear(bpy.types.Operator):
 class POPNOW_OT_refresh_balance(bpy.types.Operator):
     bl_idname = "popnow.refresh_balance"
     bl_label = "Refresh balance"
-    bl_description = "Check your credit balance"
+    bl_description = "Check your PopNow API balance (USD)"
     bl_options = {"REGISTER", "INTERNAL"}
 
     def execute(self, context):
@@ -560,10 +562,14 @@ class POPNOW_OT_open_url(bpy.types.Operator):
 
     @classmethod
     def description(cls, context, props):
-        return {"console": "Open the PopNow developer console to create an API key", "pricing": "Buy credits on popnow.ai"}.get(props.target, "Open popnow.ai")
+        return {
+            "console": "Open the PopNow developer console to create an API key",
+            "billing": "Add funds to your PopNow API balance",
+            "pricing": "See API prices in USD",
+        }.get(props.target, "Open popnow.ai")
 
     def execute(self, context):
-        url = {"console": CONSOLE_URL, "pricing": PRICING_URL}.get(self.target, "https://popnow.ai/blender")
+        url = {"console": CONSOLE_URL, "billing": BILLING_URL, "pricing": PRICING_URL}.get(self.target, "https://popnow.ai/blender")
         bpy.ops.wm.url_open(url=url)
         return {"FINISHED"}
 

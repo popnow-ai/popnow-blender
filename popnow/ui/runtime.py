@@ -9,6 +9,7 @@ import queue
 import tempfile
 import threading
 import time
+from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Callable
 
 import bpy
@@ -16,15 +17,16 @@ import bpy
 from ..core import history
 from ..core.client import ApiError, NetworkError, PopNowClient, friendly_message, key_looks_valid
 from ..core.jobs import ACTIVE, Job, JobRunner
+from ..core.money import credits_to_usd, first_usd, usd_text
 
 # Add-on package name (bl_ext.<repo>.popnow as an extension, popnow for a legacy install): the preferences bl_idname must equal it
 ADDON_ID = __package__.rsplit(".", 1)[0]
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 JOBS: dict[str, Job] = {}
 RUNNERS: dict[str, JobRunner] = {}
 EVENTS: "queue.SimpleQueue[tuple[str, Any]]" = queue.SimpleQueue()
-# Balance cache: {"credits": int, "held": int, "at": timestamp, "error": str}
+# Balance cache: {"usd": exact USD string, "held_usd": exact USD string, "at": timestamp, "error": str}
 BALANCE: dict[str, Any] = {}
 _history_loaded = False
 _apply_job: Callable[[Job], None] | None = None
@@ -113,10 +115,8 @@ def notify(job: Job) -> None:
 
 
 def start(job: Job, build_input: Callable | None = None) -> None:
-    p = prefs()
-    auto = int(getattr(p, "auto_confirm_below", 0) or 0) if p else 0
     JOBS[job.id] = job
-    runner = JobRunner(client(), job, notify, build_input=build_input, auto_confirm_below=auto)
+    runner = JobRunner(client(), job, notify, build_input=build_input, auto_confirm_below_usd=auto_confirm_usd())
     RUNNERS[job.id] = runner
     runner.start()
     ensure_timer()
@@ -143,6 +143,23 @@ def cancel(job_id: str) -> None:
         r.cancel()
 
 
+def auto_confirm_usd() -> Decimal:
+    """The "Start without asking up to" preference in USD (whole cents). A threshold saved by 0.1.x in credits is moved
+    over once (1 credit = $0.001, rounded down to the cent, so it never asks less often than before)."""
+    p = prefs()
+    if p is None:
+        return Decimal(0)
+    legacy = int(getattr(p, "auto_confirm_below", 0) or 0)
+    if legacy > 0 and not float(getattr(p, "auto_confirm_usd", 0.0) or 0.0):
+        try:
+            p.auto_confirm_usd = min(5.0, (legacy // 10) / 100)
+            p.auto_confirm_below = 0
+        except (AttributeError, TypeError, ValueError):
+            return (credits_to_usd(legacy) or Decimal(0)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    value = float(getattr(p, "auto_confirm_usd", 0.0) or 0.0)
+    return Decimal(f"{value:.2f}") if value > 0 else Decimal(0)
+
+
 def refresh_balance() -> None:
     """Fetch the balance in the background without blocking the UI"""
     if not api_key() or not online_allowed():
@@ -152,7 +169,14 @@ def refresh_balance() -> None:
     def work() -> None:
         try:
             b = c.balance()
-            EVENTS.put(("balance", {"credits": int(b.get("availableCredits") or 0), "held": int(b.get("heldCredits") or 0), "at": time.time(), "error": ""}))
+            # availableUsd / heldUsd are exact; the credit fields are read only when an older server sends no USD
+            available = first_usd(b.get("availableUsd"), b.get("available"))
+            if available is None:
+                available = credits_to_usd(b.get("availableCredits"))
+            held = first_usd(b.get("heldUsd"), b.get("held"))
+            if held is None:
+                held = credits_to_usd(b.get("heldCredits"))
+            EVENTS.put(("balance", {"usd": usd_text(available), "held_usd": usd_text(held), "at": time.time(), "error": ""}))
         except ApiError as e:
             EVENTS.put(("balance", {"error": friendly_message(e), "at": time.time()}))
         except NetworkError as e:

@@ -1,6 +1,6 @@
 # PopNow for Blender
 
-> PopNow for Blender is a free, open-source (GPL-3.0-or-later) Blender 4.2+ add-on that turns clay renders, camera views and camera animations into AI images, AI video and seamless textures using models hosted on PopNow (https://popnow.ai). It adds a PopNow tab to the 3D Viewport sidebar and spends the same credits as popnow.ai.
+> PopNow for Blender is a free, open-source (GPL-3.0-or-later) Blender 4.2+ add-on that turns clay renders, camera views and camera animations into AI images, AI video and seamless textures using models hosted on PopNow (https://popnow.ai). It adds a PopNow tab to the 3D Viewport sidebar and pays in exact US dollars from the user's PopNow API balance, which is separate from website credits.
 
 ## Workflows
 
@@ -18,9 +18,9 @@
 
 - Pure standard-library client in `popnow/core/client.py` against `https://api.popnow.ai/api/v1`.
 - Upload: `POST /common/upload-url` -> PUT bytes -> `POST /files/{fileId}/commit` -> `popnow://f/...` URI.
-- Price: `POST /jobs/quote`, user confirms, then `POST /jobs/createTask` with `quoteId`, `expectedCredits` and `Idempotency-Key`.
+- Price: `POST /jobs/quote` (`maxChargeUsd`), user confirms, then `POST /jobs/createTask` with `quoteId`, `expectedCostUsd` (the quote's `maxChargeUsd`) and `Idempotency-Key`.
 - Result: poll `GET /jobs/recordInfo?taskId=...` until `succeeded` / `failed` / `expired`; download `output.assets[].url` without the key.
-- Credits: 1 credit = $0.001, credit packs with no subscription, failed runs refunded.
+- Billing: exact USD decimal strings (`maxChargeUsd`, `estimatedCostUsd`, `costUsd`, `availableUsd`) handled with decimal.Decimal; the credit fields are deprecated fallbacks (1 credit = $0.001). No subscription; failed runs are not charged. Add funds: https://popnow.ai/api/console/billing. Prices: https://popnow.ai/api/pricing.
 
 ## Repository layout
 
@@ -34,5 +34,5 @@
 - Blender guide: https://popnow.ai/docs/blender
 - API docs: https://popnow.ai/docs
 - OpenAPI reference: https://popnow.ai/docs/openapi
-- MCP server: https://popnow.ai/mcp
-- Other repos: https://github.com/popnow-ai/popnow-api, https://github.com/popnow-ai/popnow-python, https://github.com/popnow-ai/popnow-js, https://github.com/popnow-ai/popnow-mcp, https://github.com/popnow-ai/popnow-skills
+- Developer MCP server: https://api.popnow.ai/api/v1/mcp (setup https://popnow.ai/api/mcp)
+- Other repos: https://github.com/popnow-ai/popnow-api, https://github.com/popnow-ai/popnow-python, https://github.com/popnow-ai/popnow-js, https://github.com/popnow-ai/popnow-api-mcp, https://github.com/popnow-ai/popnow-skills
