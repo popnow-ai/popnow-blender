@@ -21,7 +21,7 @@ from ..core.money import credits_to_usd, first_usd, usd_text
 
 # Add-on package name (bl_ext.<repo>.popnow as an extension, popnow for a legacy install): the preferences bl_idname must equal it
 ADDON_ID = __package__.rsplit(".", 1)[0]
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 JOBS: dict[str, Job] = {}
 RUNNERS: dict[str, JobRunner] = {}
