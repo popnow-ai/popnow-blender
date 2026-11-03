@@ -286,7 +286,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(models.estimate(pro, {"resolution": "2k"}).credits, 72)
         mini = models.get("bytedance/seedance-2.0-mini/reference-to-video")
         e = models.estimate(mini, {"resolution": "480p", "duration_seconds": 5, "reference_video_urls": ["popnow://f/x"]}, clip_seconds=[5.0])
-        self.assertEqual(e.usd, Decimal("0.1097"))  # (5 + 5) × $0.01097, no float noise
+        self.assertEqual(e.usd, Decimal("0.10969"))  # (5 + 5) × $0.010969, no float noise
         self.assertEqual(e.credits, 110)
         self.assertFalse(e.approx)
         wan = models.get("alibaba/wan-3.0/reference-to-video")
@@ -295,7 +295,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(models.estimate(turbo, {}).usd, Decimal("0.0144"))
         self.assertEqual(models.estimate(turbo, {}).credits, 15)
         kling = models.get("kling/o3/video-edit")
-        self.assertEqual(models.estimate(kling, {"resolution": "720p"}, output_seconds=5).usd, Decimal("0.626"))
+        self.assertEqual(models.estimate(kling, {"resolution": "720p"}, output_seconds=5).usd, Decimal("0.63226"))
 
     def test_estimate_prefers_a_usd_table(self):
         raw = dict(models.get("bytedance/seedream-5.0-pro/edit").raw)
