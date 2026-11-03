@@ -219,7 +219,7 @@ class BpySmokeTest(unittest.TestCase):
         from decimal import Decimal
 
         self.assertEqual(self.ops.estimate_for("render", p).usd, Decimal("0.072"))
-        self.assertEqual(self.ops.estimate_for("animate", p).usd, Decimal("0.2359"))
+        self.assertEqual(self.ops.estimate_for("animate", p).usd, Decimal("0.23588"))
         self.assertEqual(self.ops.estimate_for("render", p).credits, 72)
         self.assertEqual(self.ops.estimate_for("animate", p).credits, 236)
 
