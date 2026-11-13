@@ -3,7 +3,7 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/popnow-wordmark-light.png">
       <source media="(prefers-color-scheme: light)" srcset="assets/popnow-wordmark.png">
-      <img alt="PopNow" src="assets/popnow-wordmark.png" width="260">
+      <img alt="PopNow AI" src="assets/popnow-wordmark.png" width="260">
     </picture>
   </a>
 </p>
@@ -11,6 +11,8 @@
 # PopNow for Blender — AI render, image & video generation add-on
 
 **PopNow for Blender is a free Blender add-on that turns a clay blockout, a camera view or a camera animation into finished AI images, AI video and seamless textures, using models such as Seedream, Nano Banana, GPT Image, FLUX, Seedance, Wan and Kling through the [PopNow](https://popnow.ai) API.**
+
+Built by PopNow AI ([popnow.ai](https://popnow.ai)), the world's first AI creative studio that pays you back.
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Blender 4.2+](https://img.shields.io/badge/Blender-4.2%2B-orange.svg)](https://www.blender.org/download/)
