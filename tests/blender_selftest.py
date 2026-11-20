@@ -1,4 +1,5 @@
 """Self-test that runs in real Blender: register the add-on -> build a small scene -> render clay image / structure passes / clay video -> run the full flow against the fake backend (or the real API).
+Against the fake backend it also signs in with a PopNow account (fake OAuth) and runs Texture and Render on credits.
 
 Usage (from the repository root):
     blender --background --factory-startup --python tests/blender_selftest.py            # fake backend, no cost
@@ -164,6 +165,8 @@ def main() -> None:
     check("texture is seamless", (job.extra.get("seam_error") or 1) < 0.2, str(job.extra))
     check("texture applied to selection", bpy.context.active_object.active_material is not None and bpy.context.active_object.active_material.name.startswith("PopNow"))
 
+    account_mode(runtime, p, sp, srv)
+
     sp.render_prompt = "FAIL on purpose"
     bpy.ops.popnow.render()
     job = runtime.jobs_sorted()[0]
@@ -171,6 +174,43 @@ def main() -> None:
     check("failure reports refund", job.state == "failed" and "refunded" in job.status, job.status)
     _ = (results, imaging)
     finish(srv, tmp)
+
+
+def account_mode(runtime, p, sp, srv) -> None:
+    """Sign in with the fake server's OAuth (the "browser" follows the link), run Texture and Render on credits, sign out"""
+    import stat
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    key = os.environ.pop("POPNOW_API_KEY", "")
+    p.mcp_url = f"http://127.0.0.1:{srv.server_address[1]}/mcp"
+    runtime._open_in_browser = lambda url: opener.open(url, timeout=10).read()
+    try:
+        bpy.ops.popnow.sign_in()
+        end = time.time() + 20
+        while time.time() < end and not runtime.signed_in():
+            runtime._tick()
+            time.sleep(0.1)
+        runtime._tick()
+        check("account sign-in", runtime.mode() == "account", str(runtime.LOGIN))
+        path = runtime.account_path()
+        check("session file is private", os.path.exists(path) and stat.S_IMODE(os.stat(path).st_mode) == 0o600, path)
+        sp.tex_prompt = "worn oak planks"
+        bpy.ops.popnow.texture()
+        job = runtime.jobs_sorted()[0]
+        pump(runtime, job)
+        check("account texture succeeded", job.mode == "account" and job.state == "succeeded", job.status)
+        check("account status in credits", "credits" in job.status and "$" not in job.status, job.status)
+        sp.render_prompt = "A small red toy block on a wooden table"
+        bpy.ops.popnow.render()
+        job = runtime.jobs_sorted()[0]
+        pump(runtime, job)
+        check("account render succeeded", job.mode == "account" and job.state == "succeeded", job.status)
+        bpy.ops.popnow.sign_out()
+        check("account sign-out", not runtime.signed_in() and not os.path.exists(path))
+    finally:
+        if key:
+            os.environ["POPNOW_API_KEY"] = key
 
 
 def finish(srv, tmp) -> None:

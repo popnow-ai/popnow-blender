@@ -145,9 +145,9 @@ class BpySmokeTest(unittest.TestCase):
         for k in ("bpy", "bpy.types", "bpy.props", "mathutils"):
             sys.modules.pop(k, None)
 
-    def context(self, selected=()):
+    def context(self, selected=(), api_key="sk-popnow-" + "a" * 48):
         scene = types.SimpleNamespace(popnow=build_scene_props(self.props_mod), camera=object(), frame_start=1, render=types.SimpleNamespace(fps=24, fps_base=1.0, resolution_x=1920, resolution_y=1080))
-        prefs = types.SimpleNamespace(api_key="sk-popnow-" + "a" * 48, base_url="http://127.0.0.1:9/api/v1", output_dir=os.path.join(self.tmp, "out"), auto_confirm_usd=0.0, auto_confirm_below=0, open_results=False)
+        prefs = types.SimpleNamespace(api_key=api_key, base_url="http://127.0.0.1:9/api/v1", mcp_url="http://127.0.0.1:9/mcp", output_dir=os.path.join(self.tmp, "out"), auto_confirm_usd=0.0, auto_confirm_below=0, auto_confirm_credits=0, open_results=False)
         addons = {self.runtime.ADDON_ID: types.SimpleNamespace(preferences=prefs)}
         ctx = types.SimpleNamespace(scene=scene, selected_objects=list(selected), preferences=types.SimpleNamespace(addons=addons), window_manager=types.SimpleNamespace(windows=[], progress_begin=lambda *a: None, progress_update=lambda *a: None, progress_end=lambda: None))
         self.bpy.context = ctx
@@ -290,6 +290,159 @@ class BpySmokeTest(unittest.TestCase):
         inp = build(job, {"structure": ["popnow://f/a", "popnow://f/b"]})
         self.assertEqual(inp["image_urls"], ["popnow://f/a", "popnow://f/b"])
         self.assertIn("Image 2 is a depth map", inp["prompt"])
+
+    # ---------------- account mode (signed in, no API key) ----------------
+
+    def account_context(self, selected=()):
+        from popnow.core import account
+
+        os.environ.pop("POPNOW_API_KEY", None)
+        ctx = self.context(selected, api_key="")
+        self.runtime.account_store().set(account.Session("http://127.0.0.1:9", "http://127.0.0.1:9/mcp", "http://127.0.0.1:9/oauth/token", "pnc_1", "at-1", "rt-1"))
+        return ctx
+
+    def tearDown(self):
+        self.runtime.account_store().clear()
+        self.runtime.BALANCE.clear()
+        self.runtime.LOGIN.clear()
+        self.runtime.JOBS.clear()
+
+    @staticmethod
+    def _texts(log) -> list[str]:
+        out = []
+        for name, a, kw in log:
+            if name == "label":
+                out.append(str(kw.get("text") or (a[0] if a else "")))
+            elif "text" in kw:
+                out.append(str(kw["text"]))
+        return out
+
+    def test_mode_follows_key_then_account(self):
+        self.context(api_key="")
+        self.assertEqual(self.runtime.mode(), "")
+        self.account_context()
+        self.assertEqual(self.runtime.mode(), "account")
+        self.assertEqual(self.runtime.account_path(), os.path.join(self.tmp, "ext", "account.json"))
+        self.bpy.context.preferences.addons[self.runtime.ADDON_ID].preferences.api_key = "sk-popnow-" + "b" * 40
+        self.assertEqual(self.runtime.mode(), "api")  # a key wins
+        self.runtime.sign_out()
+        self.assertFalse(os.path.exists(self.runtime.account_path()))
+
+    def test_account_panels_show_credits_and_no_dollars(self):
+        ctx = self.account_context()
+        self.runtime.BALANCE.update({"mode": "account", "credits": 12000, "held_credits": 48, "at": time.time()})
+        from popnow.core.jobs import Job
+
+        for state, extra in [("awaiting_confirm", {"max_credits": 48}), ("awaiting_confirm", {"max_credits": 48, "extra": {"needs_consent": True}}), ("running", {"task_id": "job_1", "progress": 0.4}), ("succeeded", {"task_id": "job_2", "outputs": ["/x.png"], "credits": 48, "settled": True}), ("failed", {"task_id": "job_3", "credits": 0, "settled": True}), ("stopped", {"task_id": "job_4"})]:
+            for wf in ("render", "animate", "texture"):
+                j = Job(workflow=wf, model="", label="Auto", prompt="p", user_prompt="a prompt", options={}, media=[], out_dir=self.tmp, mode="account")
+                j.state = state
+                for k, v in extra.items():
+                    setattr(j, k, dict(v) if isinstance(v, dict) else v)
+                self.runtime.JOBS[j.id] = j
+        ctx.scene.popnow.show_all_history = True
+        texts: list[str] = []
+        for character in (None, types.SimpleNamespace(name="Hero")):
+            ctx.scene.popnow.anim_character = character
+            for cls in self.panels.CLASSES:
+                panel = cls()
+                log = []
+                panel.layout = _Layout(log)
+                panel.draw(ctx)
+                if hasattr(panel, "draw_header"):
+                    panel.draw_header(ctx)
+                texts += self._texts(log)
+                # no model picker in account mode
+                for name, a, kw in log:
+                    if name == "prop" and len(a) >= 2:
+                        self.assertNotIn(a[1], ("render_model", "anim_model", "tex_model", "render_resolution", "tex_resolution", "api_key"), cls.__name__)
+        prefs_panel = self.addon.prefs.POPNOW_AP_preferences()
+        for k, v in vars(ctx.preferences.addons[self.runtime.ADDON_ID].preferences).items():
+            setattr(prefs_panel, k, v)
+        log = []
+        prefs_panel.layout = _Layout(log)
+        prefs_panel.draw(ctx)
+        prefs_texts = self._texts(log)
+        joined = "\n".join(texts + prefs_texts)
+        self.assertNotIn("$", joined)
+        self.assertNotIn("USD", joined)
+        self.assertIn("12,000 credits · 48 held", joined)
+        self.assertIn("Start · 48 credits", joined)
+        self.assertIn("48 credits", joined)
+        self.assertTrue(any(t.startswith("Render with AI · about ") and t.endswith(" credits") for t in texts), texts)
+        self.assertTrue(any(t.startswith("Generate Texture · about ") for t in texts))
+        self.assertIn("Animate with AI", texts)  # with a character (copy_motion) the price comes with the quote
+        self.assertIn("Signed in to PopNow", prefs_texts)
+        ops_called = [a[0] for name, a, kw in log if name == "operator"]
+        self.assertIn("popnow.sign_out", ops_called)
+
+    def test_signed_out_panel_offers_sign_in(self):
+        ctx = self.context(api_key="")
+        panel = self.panels.POPNOW_PT_account()
+        log = []
+        panel.layout = _Layout(log)
+        panel.draw(ctx)
+        self.assertIn("popnow.sign_in", [a[0] for name, a, kw in log if name == "operator"])
+        self.assertNotIn("$", "\n".join(self._texts(log)))
+        self.runtime.LOGIN.update({"state": "waiting", "url": "https://example.invalid/authorize", "attempt": 1})
+        log.clear()
+        panel.draw(ctx)
+        self.assertIn("popnow.copy_sign_in_link", [a[0] for name, a, kw in log if name == "operator"])
+
+    def test_account_estimates(self):
+        ctx = self.account_context()
+        p = ctx.scene.popnow
+        for wf in ("render", "animate", "texture"):
+            n = self.ops.account_estimate(wf, p)
+            self.assertIsInstance(n, int, wf)
+            self.assertGreater(n, 0)
+        p.anim_character = types.SimpleNamespace(name="Hero")
+        self.assertIsNone(self.ops.account_estimate("animate", p))
+        self.assertEqual(self.ops.account_aspect("MATCH", (1920, 1080)), "16:9")
+        self.assertEqual(self.ops.account_aspect("2:1", (1, 1)), "16:9")
+        self.assertEqual(self.ops.account_aspect("4:5", (1920, 1080)), "4:5")
+
+    def test_account_texture_and_render_jobs(self):
+        ctx = self.account_context(selected=[types.SimpleNamespace(name="Cube", data=types.SimpleNamespace(materials=[]))])
+        p = ctx.scene.popnow
+        p.tex_prompt = "mossy cobblestone"
+        p.render_pass = "depth"
+        p.render_prompt = "a cabin"
+        from contextlib import contextmanager
+        from popnow.core.account_jobs import tool_call
+
+        cap = self.ops.capture
+        saved = (cap.capture_camera, cap.render_clay_still, cap.structure_image)
+
+        @contextmanager
+        def fake_cam(context, source):
+            yield types.SimpleNamespace(name="Camera"), (1920, 1080)
+
+        cap.capture_camera = fake_cam
+        cap.render_clay_still = lambda *a, **k: os.path.join(self.tmp, "clay.png")
+        cap.structure_image = lambda *a, **k: os.path.join(self.tmp, "depth.png")
+        ctx.scene.camera = types.SimpleNamespace(name="Camera")
+        started = []
+        orig = self.runtime.start
+        self.runtime.start = lambda job, build_input=None: started.append(job)
+        try:
+            self.assertEqual(self.ops.POPNOW_OT_texture().execute(ctx), {"FINISHED"})
+            self.assertEqual(self.ops.POPNOW_OT_render().execute(ctx), {"FINISHED"})
+        finally:
+            self.runtime.start = orig
+            cap.capture_camera, cap.render_clay_still, cap.structure_image = saved
+        tex, render = started
+        self.assertEqual((tex.mode, tex.model, tex.label), ("account", "", "Auto"))
+        self.assertEqual(tool_call(tex, {}), ("create_image", {"prompt": tex.prompt, "aspect_ratio": "1:1"}))
+        self.assertEqual(render.mode, "account")
+        self.assertEqual([m.slot for m in render.media], ["structure", "structure"])
+        tool, args = tool_call(render, {"structure": ["popnow://f/a", "popnow://f/b"]})
+        self.assertEqual(tool, "edit_image")
+        self.assertEqual((args["image_url"], args["more_image_urls"], args["aspect_ratio"]), ("popnow://f/a", ["popnow://f/b"], "16:9"))
+        self.assertTrue(args["prompt"][0].isupper())
+        self.assertIn("Image 2 is a depth map", args["prompt"].replace("image 2", "Image 2"))
+        self.assertNotIn("@", args["prompt"])
+        self.assertIsInstance(render.estimate, int)
 
 
 if __name__ == "__main__":

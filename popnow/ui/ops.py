@@ -1,15 +1,22 @@
-"""Operators: the Render with AI / Animate with AI / Texture entry points, confirming, canceling and resuming tasks, and where results go."""
+"""Operators: the Render with AI / Animate with AI / Texture entry points, confirming, canceling and resuming tasks, where results go,
+and signing in to a PopNow account.
+
+Two modes (runtime.mode()): with an API key the entry points build a model request priced in USD (JobRunner); signed in without
+a key they build an account request priced in credits (account_jobs.AccountJobRunner): no model is sent, the server picks it.
+"""
 
 import os
 import shutil
 import uuid
+from decimal import ROUND_HALF_UP, Decimal
 
 import bpy
 from bpy.props import IntProperty, StringProperty
 
 from . import capture, results, runtime
 from .props import option_value
-from ..core import models, recipes
+from ..core import account_jobs, models, recipes
+from ..core.account import PRICING_URL as CREDITS_URL
 from ..core.client import BILLING_URL, CONSOLE_URL, PRICING_URL
 from ..core.money import usd_text
 from ..core.jobs import Job, MediaFile
@@ -17,10 +24,20 @@ from ..core.jobs import Job, MediaFile
 MAX_INPUT_DIRS = 30
 
 
-def _ready(op, context) -> bool:
-    """Whether requests may be sent: online access allowed and a key present"""
+def _ready(op, context, need: str = "") -> bool:
+    """Whether requests may be sent: online access allowed, and an API key or a signed-in account.
+    need: the mode a task was made in ('api' / 'account'), for Resume and Run again; empty uses the current mode"""
     if not runtime.online_allowed():
         op.report({"ERROR"}, "Turn on Allow Online Access in Preferences > System to use PopNow.")
+        return False
+    m = need or runtime.mode()
+    if m == "account":
+        if not runtime.signed_in():
+            op.report({"ERROR"}, "Sign in with PopNow first (PopNow panel, or Preferences > Add-ons > PopNow).")
+            return False
+        return True
+    if not m:
+        op.report({"ERROR"}, "Sign in with PopNow first (PopNow panel, or Preferences > Add-ons > PopNow).")
         return False
     status = runtime.key_status()
     if status == "missing":
@@ -46,6 +63,47 @@ def _input_dir(job_id: str) -> str:
 def _build_input(job: Job, uploaded: dict) -> dict:
     spec = models.get(job.model)
     return recipes.build_input(spec, job.prompt, job.options, recipes.Uploaded(**{k: list(v) for k, v in uploaded.items()}))
+
+
+# Shapes edit_image accepts on its default models; "Match camera" picks the closest one
+ACCOUNT_ASPECTS = ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "4:5", "5:4", "21:9"]
+
+
+def account_aspect(ident: str, size) -> str | None:
+    """The picked shape when edit_image takes it, else the closest one it takes (to the picked shape, or to the camera for Match camera)"""
+    if ident in ACCOUNT_ASPECTS:
+        return ident
+    try:
+        w, h = (float(x) for x in ident.split(":"))
+        if w > 0 and h > 0:
+            size = (w, h)
+    except ValueError:
+        pass
+    return models.closest_aspect(ACCOUNT_ASPECTS, *size)
+
+
+def _neutral(text: str) -> str:
+    """The recipes start some sentences with "the first image"; capitalize the first letter of the prompt"""
+    return text[:1].upper() + text[1:] if text else text
+
+
+def account_estimate(workflow: str, props, size=(16, 9)) -> int | None:
+    """Local "about N credits": the local USD estimate of the server's usual default model, x1000, rounded. The quote is authoritative"""
+    if workflow == "animate" and props.anim_character is not None:
+        return None  # copy_motion's default model is not in the bundled table: the price comes with the quote
+    tool = {"render": "edit_image", "animate": "edit_video", "texture": "create_image"}[workflow]
+    spec = models.get(account_jobs.ESTIMATE_MODELS[tool])
+    if spec is None:
+        return None
+    if workflow == "animate":
+        secs = animate_seconds(account_jobs.NEUTRAL_EDIT_VIDEO, props)
+        clip = spec.media("clip")
+        est = models.estimate(spec, {clip["field"]: ["clip"] if clip["array"] else "clip"}, clip_seconds=[secs], output_seconds=secs)
+    else:
+        est = models.estimate(spec, {})
+    if est is None:
+        return None
+    return max(1, int((est.usd * Decimal(1000)).to_integral_value(rounding=ROUND_HALF_UP)))
 
 
 def _aspect(spec, ident: str, size) -> str | None:
@@ -142,7 +200,8 @@ class POPNOW_OT_render(_Base):
         if not _ready(self, context):
             return {"CANCELLED"}
         props = context.scene.popnow
-        spec = models.get(props.render_model)
+        acct = runtime.mode() == "account"
+        spec = account_jobs.NEUTRAL_RENDER if acct else models.get(props.render_model)
         if spec is None:
             self.report({"ERROR"}, "Pick a model.")
             return {"CANCELLED"}
@@ -180,9 +239,13 @@ class POPNOW_OT_render(_Base):
         refs = [] if spec.media("control") else _refs([props.ref_1, props.ref_2, props.ref_3], spec, job_dir)
         media += refs
         prompt = recipes.render_prompt(spec, props.render_prompt, props.render_style, pass_kind=pass_kind if not spec.media("control") else "none", n_refs=len(refs), source="render" if props.render_source == "RENDER" else "clay")
-        job = Job(id=job_id, workflow="render", model=spec.model, label=spec.label, prompt=prompt, user_prompt=props.render_prompt, options=render_options(spec, props, size), media=media, out_dir=runtime.output_dir())
-        est = estimate_for("render", props, size)
-        job.estimate_usd = usd_text(est.usd) if est else ""
+        if acct:
+            job = Job(id=job_id, workflow="render", model="", label="Auto", prompt=_neutral(prompt), user_prompt=props.render_prompt, options={"aspect_ratio": account_aspect(props.render_aspect, aspect)}, media=media, out_dir=runtime.output_dir(), mode="account")
+            job.estimate = account_estimate("render", props, size)
+        else:
+            job = Job(id=job_id, workflow="render", model=spec.model, label=spec.label, prompt=prompt, user_prompt=props.render_prompt, options=render_options(spec, props, size), media=media, out_dir=runtime.output_dir())
+            est = estimate_for("render", props, size)
+            job.estimate_usd = usd_text(est.usd) if est else ""
         job.extra.update({"camera": camera_name, "aspect": list(aspect), "clay": clay})
         self._start(job, spec)
         return {"FINISHED"}
@@ -197,7 +260,8 @@ class POPNOW_OT_animate(_Base):
         if not _ready(self, context):
             return {"CANCELLED"}
         props = context.scene.popnow
-        spec = models.get(props.anim_model)
+        acct = runtime.mode() == "account"
+        spec = account_jobs.neutral_spec("animate", props.anim_character is not None) if acct else models.get(props.anim_model)
         if spec is None:
             self.report({"ERROR"}, "Pick a model.")
             return {"CANCELLED"}
@@ -220,9 +284,13 @@ class POPNOW_OT_animate(_Base):
         if spec.media("character"):
             media.append(MediaFile(capture.export_image(props.anim_character, os.path.join(job_dir, "character")), "character"))
         prompt = recipes.animate_prompt(spec, props.anim_prompt, props.anim_style, n_refs=len(refs))
-        job = Job(id=job_id, workflow="animate", model=spec.model, label=spec.label, prompt=prompt, user_prompt=props.anim_prompt, options=animate_options(spec, props, size), media=media, out_dir=runtime.output_dir())
-        est = estimate_for("animate", props, size)
-        job.estimate_usd = usd_text(est.usd) if est else ""
+        if acct:
+            job = Job(id=job_id, workflow="animate", model="", label="Auto", prompt=_neutral(prompt), user_prompt=props.anim_prompt, options={}, media=media, out_dir=runtime.output_dir(), mode="account")
+            job.estimate = account_estimate("animate", props, size)
+        else:
+            job = Job(id=job_id, workflow="animate", model=spec.model, label=spec.label, prompt=prompt, user_prompt=props.anim_prompt, options=animate_options(spec, props, size), media=media, out_dir=runtime.output_dir())
+            est = estimate_for("animate", props, size)
+            job.estimate_usd = usd_text(est.usd) if est else ""
         job.extra.update({"clip": clip, "seconds": real, "camera": context.scene.camera.name if context.scene.camera else ""})
         self._start(job, spec)
         return {"FINISHED"}
@@ -237,7 +305,8 @@ class POPNOW_OT_texture(_Base):
         if not _ready(self, context):
             return {"CANCELLED"}
         props = context.scene.popnow
-        spec = models.get(props.tex_model)
+        acct = runtime.mode() == "account"
+        spec = account_jobs.NEUTRAL_TEXTURE if acct else models.get(props.tex_model)
         if spec is None:
             self.report({"ERROR"}, "Pick a model.")
             return {"CANCELLED"}
@@ -249,9 +318,13 @@ class POPNOW_OT_texture(_Base):
             opts["aspect"] = "1:1"
         opts = {k: v for k, v in opts.items() if v is not None}
         targets = [o.name for o in context.selected_objects if hasattr(getattr(o, "data", None), "materials")] if props.tex_apply else []
-        job = Job(workflow="texture", model=spec.model, label=spec.label, prompt=recipes.texture_prompt(props.tex_prompt, props.tex_style), user_prompt=props.tex_prompt, options=opts, media=[], out_dir=runtime.output_dir())
-        est = estimate_for("texture", props)
-        job.estimate_usd = usd_text(est.usd) if est else ""
+        if acct:
+            job = Job(workflow="texture", model="", label="Auto", prompt=recipes.texture_prompt(props.tex_prompt, props.tex_style), user_prompt=props.tex_prompt, options={"aspect_ratio": "1:1"}, media=[], out_dir=runtime.output_dir(), mode="account")
+            job.estimate = account_estimate("texture", props)
+        else:
+            job = Job(workflow="texture", model=spec.model, label=spec.label, prompt=recipes.texture_prompt(props.tex_prompt, props.tex_style), user_prompt=props.tex_prompt, options=opts, media=[], out_dir=runtime.output_dir())
+            est = estimate_for("texture", props)
+            job.estimate_usd = usd_text(est.usd) if est else ""
         job.extra.update({"targets": targets, "apply": bool(props.tex_apply), "seamless": bool(props.tex_seamless), "scale": float(props.tex_scale)})
         self._start(job, spec)
         return {"FINISHED"}
@@ -271,10 +344,36 @@ class _JobOp(bpy.types.Operator):
 class POPNOW_OT_job_confirm(_JobOp):
     bl_idname = "popnow.job_confirm"
     bl_label = "Start"
-    bl_description = "Start this generation. The price is held from your API balance now and the unused part is released when it finishes"
+
+    @classmethod
+    def description(cls, context, props):
+        job = runtime.JOBS.get(props.job_id)
+        if job is not None and job.mode == "account":
+            return "Start this generation for the credits shown. Credits are refunded automatically if it fails"
+        return "Start this generation. The price is held from your API balance now and the unused part is released when it finishes"
 
     def execute(self, context):
-        runtime.confirm(self.job_id)
+        job = self.job()
+        if job is not None and job.extra.get("needs_consent") and not job.extra.get("consent_ticked"):
+            self.report({"ERROR"}, "Tick the permission box first.")
+            return {"CANCELLED"}
+        runtime.confirm(self.job_id, consent=bool(job and job.extra.get("consent_ticked")))
+        return {"FINISHED"}
+
+
+class POPNOW_OT_job_consent(_JobOp):
+    bl_idname = "popnow.job_consent"
+    bl_label = "I have permission"
+    bl_description = (
+        "The people in these images are me, or they agreed to this; nobody in them is under 18; "
+        "and it will not be used to mislead anyone about who someone is, or for anything unlawful"
+    )
+
+    def execute(self, context):
+        job = self.job()
+        if job is not None:
+            job.extra["consent_ticked"] = not job.extra.get("consent_ticked")
+            runtime.redraw()
         return {"FINISHED"}
 
 
@@ -297,7 +396,7 @@ class POPNOW_OT_job_resume(_JobOp):
         job = self.job()
         if job is None or not job.task_id:
             return {"CANCELLED"}
-        if not _ready(self, context):
+        if not _ready(self, context, job.mode):
             return {"CANCELLED"}
         runtime.resume(job)
         return {"FINISHED"}
@@ -310,18 +409,18 @@ class POPNOW_OT_job_rerun(_JobOp):
 
     def execute(self, context):
         old = self.job()
-        if old is None or not _ready(self, context):
+        if old is None or not _ready(self, context, old.mode):
             return {"CANCELLED"}
         missing = [m.path for m in old.media if not os.path.exists(m.path)]
         if missing:
             self.report({"ERROR"}, "The original input files are gone. Render again from the panel.")
             return {"CANCELLED"}
         spec = models.get(old.model)
-        job = Job(workflow=old.workflow, model=old.model, label=old.label, prompt=old.prompt, user_prompt=old.user_prompt, options=dict(old.options), media=[MediaFile(m.path, m.slot, m.seconds) for m in old.media], out_dir=runtime.output_dir())
-        job.extra = {k: v for k, v in old.extra.items() if not k.startswith(("apply", "texture_path", "seam"))}
+        job = Job(workflow=old.workflow, model=old.model, label=old.label, prompt=old.prompt, user_prompt=old.user_prompt, options=dict(old.options), media=[MediaFile(m.path, m.slot, m.seconds) for m in old.media], out_dir=runtime.output_dir(), mode=old.mode)
+        job.extra = {k: v for k, v in old.extra.items() if not k.startswith(("apply", "texture_path", "seam", "needs_consent", "consent"))}
         job.estimate_usd = old.estimate_usd
         job.estimate = old.estimate
-        job.extra["typical_seconds"] = spec.typical_seconds if spec else 60
+        job.extra["typical_seconds"] = spec.typical_seconds if spec else old.extra.get("typical_seconds", 60)
         runtime.start(job, build_input=_build_input)
         return {"FINISHED"}
 
@@ -368,7 +467,7 @@ class POPNOW_OT_history_clear(bpy.types.Operator):
 class POPNOW_OT_refresh_balance(bpy.types.Operator):
     bl_idname = "popnow.refresh_balance"
     bl_label = "Refresh balance"
-    bl_description = "Check your PopNow API balance (USD)"
+    bl_description = "Check your PopNow balance"
     bl_options = {"REGISTER", "INTERNAL"}
 
     def execute(self, context):
@@ -566,15 +665,79 @@ class POPNOW_OT_open_url(bpy.types.Operator):
             "console": "Open the PopNow developer console to create an API key",
             "billing": "Add funds to your PopNow API balance",
             "pricing": "See API prices in USD",
+            "credits": "Get more PopNow credits",
         }.get(props.target, "Open popnow.ai")
 
     def execute(self, context):
-        url = {"console": CONSOLE_URL, "billing": BILLING_URL, "pricing": PRICING_URL}.get(self.target, "https://popnow.ai/blender")
+        url = {"console": CONSOLE_URL, "billing": BILLING_URL, "pricing": PRICING_URL, "credits": CREDITS_URL}.get(self.target, "https://popnow.ai/blender")
         bpy.ops.wm.url_open(url=url)
         return {"FINISHED"}
 
 
+# ---------------- account ----------------
+
+
+class POPNOW_OT_sign_in(bpy.types.Operator):
+    bl_idname = "popnow.sign_in"
+    bl_label = "Sign in with PopNow"
+    bl_description = "Sign in with your PopNow account in the browser and pay with your credits (the same balance as on popnow.ai)"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context):
+        if not runtime.online_allowed():
+            self.report({"ERROR"}, "Turn on Allow Online Access in Preferences > System to use PopNow.")
+            return {"CANCELLED"}
+        runtime.sign_in()
+        self.report({"INFO"}, "Finish signing in in your browser.")
+        return {"FINISHED"}
+
+
+class POPNOW_OT_sign_in_cancel(bpy.types.Operator):
+    bl_idname = "popnow.sign_in_cancel"
+    bl_label = "Cancel sign-in"
+    bl_description = "Stop waiting for the browser"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context):
+        runtime.cancel_sign_in()
+        runtime.redraw()
+        return {"FINISHED"}
+
+
+class POPNOW_OT_copy_sign_in_link(bpy.types.Operator):
+    bl_idname = "popnow.copy_sign_in_link"
+    bl_label = "Copy sign-in link"
+    bl_description = "Copy the sign-in link, to open it in another browser"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context):
+        url = runtime.LOGIN.get("url") or ""
+        if not url:
+            return {"CANCELLED"}
+        context.window_manager.clipboard = url
+        self.report({"INFO"}, "Sign-in link copied.")
+        return {"FINISHED"}
+
+
+class POPNOW_OT_sign_out(bpy.types.Operator):
+    bl_idname = "popnow.sign_out"
+    bl_label = "Sign out"
+    bl_description = "Sign out of PopNow on this computer"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context):
+        runtime.sign_out()
+        runtime.redraw()
+        self.report({"INFO"}, "Signed out of PopNow.")
+        return {"FINISHED"}
+
+
 CLASSES = (
+    POPNOW_OT_sign_in,
+    POPNOW_OT_sign_in_cancel,
+    POPNOW_OT_copy_sign_in_link,
+    POPNOW_OT_sign_out,
+    POPNOW_OT_job_consent,
     POPNOW_OT_render,
     POPNOW_OT_animate,
     POPNOW_OT_texture,

@@ -27,9 +27,9 @@ from typing import Any, Callable
 
 DEFAULT_BASE_URL = "https://api.popnow.ai/api/v1"
 CONSOLE_URL = "https://popnow.ai/api/console"
-# API prices in USD; the API balance is separate from website credits
+# API prices in USD. Your PopNow balance, shown in USD (the same balance as on popnow.ai)
 PRICING_URL = "https://popnow.ai/api/pricing"
-# Where the API balance is funded
+# Where the balance is topped up in USD
 BILLING_URL = "https://popnow.ai/api/console/billing"
 
 # Media types the upload endpoint accepts (a subset of UploadURLRequest.contentType)

@@ -1,4 +1,5 @@
-"""Runtime: task table, event queue between background threads and the main thread, timers, history on disk, balance cache.
+"""Runtime: task table, event queue between background threads and the main thread, timers, history on disk, balance cache,
+and the PopNow account session (account mode: signed in, paid with credits; used when no API key is set).
 
 Background threads only put "which task changed" into EVENTS; every bpy operation happens in bpy.app.timers callbacks (main thread),
 so the Blender UI does not freeze during generation.
@@ -9,25 +10,33 @@ import queue
 import tempfile
 import threading
 import time
+import webbrowser
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Callable
 
 import bpy
 
-from ..core import history
+from ..core import account, history
+from ..core.account_jobs import AccountJobRunner
 from ..core.client import ApiError, NetworkError, PopNowClient, friendly_message, key_looks_valid
 from ..core.jobs import ACTIVE, Job, JobRunner
 from ..core.money import credits_to_usd, first_usd, usd_text
 
 # Add-on package name (bl_ext.<repo>.popnow as an extension, popnow for a legacy install): the preferences bl_idname must equal it
 ADDON_ID = __package__.rsplit(".", 1)[0]
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 JOBS: dict[str, Job] = {}
-RUNNERS: dict[str, JobRunner] = {}
+RUNNERS: dict[str, "JobRunner | AccountJobRunner"] = {}
 EVENTS: "queue.SimpleQueue[tuple[str, Any]]" = queue.SimpleQueue()
-# Balance cache: {"usd": exact USD string, "held_usd": exact USD string, "at": timestamp, "error": str}
+# Balance cache. API mode: {"mode": "api", "usd": exact USD string, "held_usd": exact USD string, "at", "error"};
+# account mode: {"mode": "account", "credits": int, "held_credits": int, "at", "error"}
 BALANCE: dict[str, Any] = {}
+# Sign-in progress: {"state": "waiting" | "error", "url": the sign-in link while waiting, "error": str}; empty when idle
+LOGIN: dict[str, Any] = {}
+_login_stop = threading.Event()
+_login_attempt = 0
+_store: "account.SessionStore | None" = None
 _history_loaded = False
 _apply_job: Callable[[Job], None] | None = None
 
@@ -55,9 +64,109 @@ def online_allowed() -> bool:
     return bool(getattr(bpy.app, "online_access", True))
 
 
-def client() -> PopNowClient:
+def user_agent() -> str:
     v = ".".join(str(x) for x in bpy.app.version[:2])
-    return PopNowClient(api_key(), base_url(), user_agent=f"PopNow-Blender/{VERSION} (Blender {v})")
+    return f"PopNow-Blender/{VERSION} (Blender {v})"
+
+
+def client() -> PopNowClient:
+    return PopNowClient(api_key(), base_url(), user_agent=user_agent())
+
+
+# ---------------- account mode ----------------
+
+
+def mcp_url() -> str:
+    p = prefs()
+    url = (getattr(p, "mcp_url", "") or "").strip() if p else ""
+    return url or os.environ.get("POPNOW_MCP_URL", "").strip() or account.DEFAULT_MCP_URL
+
+
+def account_path() -> str:
+    """account.json in the add-on's own user folder (extension_path_user), never in userpref.blend or a .blend"""
+    return os.path.join(user_dir(), "account.json")
+
+
+def account_store() -> account.SessionStore:
+    global _store
+    path = account_path()
+    if _store is None or _store.path != path:
+        _store = account.SessionStore(path)
+    return _store
+
+
+def signed_in() -> bool:
+    return account_store().get() is not None
+
+
+def mode() -> str:
+    """'api' when an API key is set (USD), 'account' when signed in without a key (credits), '' when neither"""
+    if api_key():
+        return "api"
+    return "account" if signed_in() else ""
+
+
+def account_client() -> account.AccountClient:
+    return account.AccountClient(account_store(), http=account.Http(user_agent=user_agent()), client_version=VERSION)
+
+
+def auto_confirm_credits() -> int:
+    """The "Start without asking up to (credits)" preference for account mode; 0 always asks"""
+    p = prefs()
+    try:
+        return max(0, int(getattr(p, "auto_confirm_credits", 0) or 0)) if p else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def sign_in() -> None:
+    """Start signing in on a background thread: the browser opens on popnow.ai and comes back to a loopback port"""
+    global _login_stop, _login_attempt
+    if LOGIN.get("state") == "waiting" or not online_allowed():
+        return
+    # A fresh stop flag and attempt number per sign-in, so a canceled attempt that finishes late changes nothing
+    _login_stop = stop = threading.Event()
+    _login_attempt += 1
+    attempt = _login_attempt
+    LOGIN.clear()
+    LOGIN.update({"state": "waiting", "url": "", "attempt": attempt})
+    store, url, http = account_store(), mcp_url(), account.Http(user_agent=user_agent())
+
+    def opened(link: str) -> None:
+        EVENTS.put(("open_url", {"attempt": attempt, "url": link}))
+
+    def work() -> None:
+        try:
+            session = account.login(http, url, open_url=opened, should_stop=stop.is_set)
+            if stop.is_set():
+                return
+            store.set(session)
+            EVENTS.put(("login", {"attempt": attempt, "ok": True}))
+        except account.AccountError as e:
+            EVENTS.put(("login", {"attempt": attempt, "state": "error", "error": str(e)}))
+        except NetworkError as e:
+            EVENTS.put(("login", {"attempt": attempt, "state": "error", "error": str(e)}))
+        except OSError as e:
+            EVENTS.put(("login", {"attempt": attempt, "state": "error", "error": f"Could not save the sign-in: {e.strerror or e}"}))
+
+    threading.Thread(target=work, daemon=True, name="popnow-sign-in").start()
+    ensure_timer()
+
+
+def cancel_sign_in() -> None:
+    _login_stop.set()
+    LOGIN.clear()
+
+
+def sign_out() -> None:
+    """Forget the session right away; tell PopNow to revoke the tokens in the background (best effort)"""
+    session = account_store().clear()
+    BALANCE.clear()
+    LOGIN.clear()
+    if session is None or not online_allowed():
+        return
+    http = account.Http(user_agent=user_agent())
+    threading.Thread(target=lambda: account.revoke(http, session), daemon=True, name="popnow-sign-out").start()
 
 
 def user_dir(sub: str = "") -> str:
@@ -114,9 +223,17 @@ def notify(job: Job) -> None:
     EVENTS.put(("job", job.id))
 
 
+def _runner(job: Job, build_input: Callable | None = None, *, fresh: bool = True):
+    if job.mode == "account":
+        return AccountJobRunner(account_client(), job, notify, auto_confirm_below_credits=auto_confirm_credits() if fresh else 0)
+    if fresh:
+        return JobRunner(client(), job, notify, build_input=build_input, auto_confirm_below_usd=auto_confirm_usd())
+    return JobRunner(client(), job, notify)
+
+
 def start(job: Job, build_input: Callable | None = None) -> None:
     JOBS[job.id] = job
-    runner = JobRunner(client(), job, notify, build_input=build_input, auto_confirm_below_usd=auto_confirm_usd())
+    runner = _runner(job, build_input)
     RUNNERS[job.id] = runner
     runner.start()
     ensure_timer()
@@ -125,15 +242,19 @@ def start(job: Job, build_input: Callable | None = None) -> None:
 
 def resume(job: Job) -> None:
     job.state, job.status, job.error = "queued", "Checking on PopNow…", ""
-    runner = JobRunner(client(), job, notify)
+    runner = _runner(job, fresh=False)
     RUNNERS[job.id] = runner
     runner.start()
     ensure_timer()
 
 
-def confirm(job_id: str) -> None:
+def confirm(job_id: str, consent: bool = False) -> None:
     r = RUNNERS.get(job_id)
-    if r:
+    if r is None:
+        return
+    if isinstance(r, AccountJobRunner):
+        r.confirm(consent=consent)
+    else:
         r.confirm()
 
 
@@ -161,8 +282,14 @@ def auto_confirm_usd() -> Decimal:
 
 
 def refresh_balance() -> None:
-    """Fetch the balance in the background without blocking the UI"""
-    if not api_key() or not online_allowed():
+    """Fetch the balance in the background without blocking the UI (USD with an API key, credits when signed in)"""
+    if not online_allowed():
+        return
+    m = mode()
+    if m == "account":
+        _refresh_credits()
+        return
+    if m != "api":
         return
     c = client()
 
@@ -176,11 +303,26 @@ def refresh_balance() -> None:
             held = first_usd(b.get("heldUsd"), b.get("held"))
             if held is None:
                 held = credits_to_usd(b.get("heldCredits"))
-            EVENTS.put(("balance", {"usd": usd_text(available), "held_usd": usd_text(held), "at": time.time(), "error": ""}))
+            EVENTS.put(("balance", {"mode": "api", "usd": usd_text(available), "held_usd": usd_text(held), "at": time.time(), "error": ""}))
         except ApiError as e:
-            EVENTS.put(("balance", {"error": friendly_message(e), "at": time.time()}))
+            EVENTS.put(("balance", {"mode": "api", "error": friendly_message(e), "at": time.time()}))
         except NetworkError as e:
-            EVENTS.put(("balance", {"error": str(e), "at": time.time()}))
+            EVENTS.put(("balance", {"mode": "api", "error": str(e), "at": time.time()}))
+
+    BALANCE["loading"] = True
+    threading.Thread(target=work, daemon=True, name="popnow-balance").start()
+    ensure_timer()
+
+
+def _refresh_credits() -> None:
+    c = account_client()
+
+    def work() -> None:
+        try:
+            b = c.balance()
+            EVENTS.put(("balance", {"mode": "account", "credits": b["credits"], "held_credits": b.get("held", 0), "at": time.time(), "error": ""}))
+        except (account.AccountError, NetworkError) as e:
+            EVENTS.put(("balance", {"mode": "account", "error": str(e), "at": time.time()}))
 
     BALANCE["loading"] = True
     threading.Thread(target=work, daemon=True, name="popnow-balance").start()
@@ -216,6 +358,21 @@ def _tick() -> float:
             BALANCE.clear()
             BALANCE.update(payload)
             continue
+        if kind == "open_url":
+            if payload.get("attempt") == LOGIN.get("attempt") and LOGIN.get("state") == "waiting":
+                LOGIN["url"] = payload["url"]
+                _open_in_browser(payload["url"])
+            continue
+        if kind == "login":
+            if payload.get("attempt") != LOGIN.get("attempt"):
+                continue  # a canceled sign-in finishing late
+            LOGIN.clear()
+            if payload.get("state") == "error":
+                LOGIN.update({"state": "error", "error": payload.get("error", "")})
+            elif payload.get("ok"):
+                BALANCE.clear()
+                refresh_balance()
+            continue
         job = JOBS.get(payload)
         if job is None:
             continue
@@ -234,7 +391,15 @@ def _tick() -> float:
         refresh_balance()
     if changed:
         redraw()
-    return 0.2 if any(j.is_active for j in JOBS.values()) or BALANCE.get("loading") else 1.0
+    busy = any(j.is_active for j in JOBS.values()) or BALANCE.get("loading") or LOGIN.get("state") == "waiting"
+    return 0.2 if busy else 1.0
+
+
+def _open_in_browser(url: str) -> None:
+    try:
+        bpy.ops.wm.url_open(url=url)
+    except Exception:
+        webbrowser.open(url)
 
 
 def ensure_timer() -> None:
@@ -259,6 +424,7 @@ def redraw() -> None:
 
 def shutdown() -> None:
     """On unregister: stop all waiting (tasks already handed to PopNow keep running on the server and can be resumed next time), save to disk"""
+    cancel_sign_in()
     for r in list(RUNNERS.values()):
         r.cancel()
     for r in list(RUNNERS.values()):

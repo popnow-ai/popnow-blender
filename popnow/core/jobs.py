@@ -56,6 +56,9 @@ class Job:
     media: list[MediaFile]
     out_dir: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
+    # "api": an API key pays in USD (JobRunner); "account": a signed-in PopNow account pays in credits (account_jobs.py),
+    # where the credit fields below hold the amounts in credits
+    mode: str = "api"
     created_at: float = field(default_factory=time.time)
     state: str = "uploading"
     status: str = "Preparing…"

@@ -1,6 +1,7 @@
 """N panel (the PopNow tab in the 3D viewport sidebar): Account, Render with AI, Animate with AI, Texture, Tasks.
 
 Built so the defaults just work: each block shows only the prompt, style, reference images, model and one main button with the price;
+signed in with a PopNow account (no API key) the model picker is hidden (the server picks it) and every price is in credits;
 rarely used settings such as aspect ratio, resolution and structure pass sit in a More subpanel collapsed by default. The Tasks panel also appears in the Image Editor sidebar.
 """
 
@@ -9,8 +10,9 @@ import time
 import bpy
 
 from . import capture, runtime
-from .ops import animate_seconds, estimate_for
-from ..core import models
+from .ops import account_estimate, animate_seconds, estimate_for
+from ..core import account_jobs, models
+from ..core.account import credits_text
 from ..core.client import mask_key
 from ..core.money import format_usd, parse_usd
 
@@ -36,11 +38,23 @@ def _price_text(label: str, est) -> str:
     return f"{label} · {'~' if est.approx else '≈'}{format_usd(est.usd)}"
 
 
+def _credit_price(label: str, n: int | None) -> str:
+    """Account mode: a local estimate in credits, marked as one; the quote before Start is what counts"""
+    return f"{label} · about {credits_text(n)}" if n is not None else label
+
+
 def _blocked(layout) -> bool:
-    """Draw a hint when online access or the key is missing; returns True when the main button must be disabled"""
+    """True when the main button must be disabled: online access off, or neither a valid key nor a signed-in account"""
     if not runtime.online_allowed():
         return True
-    return runtime.key_status() != "ok"
+    m = runtime.mode()
+    if m == "account":
+        return False
+    return m != "api" or runtime.key_status() != "ok"
+
+
+def _account() -> bool:
+    return runtime.mode() == "account"
 
 
 def _prompt(layout, props, attr: str, placeholder: str) -> None:
@@ -81,20 +95,24 @@ class POPNOW_PT_account(_Panel):
             box.operator("popnow.open_online_prefs", icon="PREFERENCES")
             return
         p = runtime.prefs()
+        m = runtime.mode()
+        if not m:
+            _draw_sign_in(layout)
+            return
         status = runtime.key_status()
-        if status != "ok":
+        if m == "api" and status != "ok":
             col = layout.column(align=True)
-            col.label(text="1. Get a free API key", icon="KEYINGSET")
-            col.operator("popnow.open_url", text="Get API key", icon="URL").target = "console"
-            col.separator()
-            col.label(text="2. Paste it here")
             if p is not None:
                 col.prop(p, "api_key", text="")
-            if status == "malformed":
-                col.label(text="Keys start with sk-popnow-", icon="ERROR")
+            col.label(text="Keys start with sk-popnow-", icon="ERROR")
+            return
+        b = runtime.BALANCE
+        if b and b.get("mode") != m and not b.get("loading"):
+            b.clear()  # the key was added or removed, or the account signed in or out
+        if m == "account":
+            _draw_credits(layout, b)
             return
         row = layout.row(align=True)
-        b = runtime.BALANCE
         if b.get("loading"):
             row.label(text="Checking balance…", icon="TIME")
         elif b.get("error"):
@@ -113,6 +131,41 @@ class POPNOW_PT_account(_Panel):
             runtime.refresh_balance()
 
 
+def _draw_sign_in(layout) -> None:
+    login = runtime.LOGIN
+    col = layout.column(align=True)
+    if login.get("state") == "waiting":
+        col.label(text="Finish signing in in your browser…", icon="TIME")
+        row = col.row(align=True)
+        row.operator("popnow.sign_in_cancel", text="Cancel")
+        if login.get("url"):
+            row.operator("popnow.copy_sign_in_link", text="Copy link", icon="COPYDOWN")
+        return
+    row = col.row()
+    row.scale_y = 1.5
+    row.operator("popnow.sign_in", icon="URL")
+    if login.get("state") == "error":
+        _note(col, str(login.get("error") or ""), "ERROR")
+
+
+def _draw_credits(layout, b) -> None:
+    row = layout.row(align=True)
+    if b.get("loading"):
+        row.label(text="Checking credits…", icon="TIME")
+    elif b.get("error"):
+        row.alert = True
+        row.label(text=b["error"][:60], icon="ERROR")
+    elif "credits" in b:
+        held = int(b.get("held_credits") or 0)
+        row.label(text=credits_text(int(b["credits"])) + (f" · {held:,} held" if held else ""), icon="FUND")
+    else:
+        row.label(text="Signed in to PopNow", icon="CHECKMARK")
+    row.operator("popnow.refresh_balance", text="", icon="FILE_REFRESH")
+    row.operator("popnow.open_url", text="", icon="ADD").target = "credits"
+    if not b:
+        runtime.refresh_balance()
+
+
 class POPNOW_PT_render(_Panel):
     bl_label = "Render with AI"
     bl_idname = "POPNOW_PT_render"
@@ -124,24 +177,26 @@ class POPNOW_PT_render(_Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.popnow
-        spec = models.get(props.render_model)
+        acct = _account()
+        spec = account_jobs.NEUTRAL_RENDER if acct else models.get(props.render_model)
         layout.row().prop(props, "render_source", expand=True)
         _prompt(layout, props, "render_prompt", "A cozy cabin at dusk, warm window light")
         layout.prop(props, "render_style")
-        layout.prop(props, "render_model")
-        if spec:
-            _note(layout, spec.note)
+        if not acct:
+            layout.prop(props, "render_model")
+            if spec:
+                _note(layout, spec.note)
         if spec and spec.max_refs and not spec.media("control"):
             col = layout.column(align=True)
             col.label(text="Reference images (optional)")
             for i, attr in enumerate(("ref_1", "ref_2", "ref_3")[: spec.max_refs]):
                 if i == 0 or getattr(props, ("ref_1", "ref_2", "ref_3")[i - 1]) is not None:
                     col.template_ID(props, attr, open="image.open")
-        est = estimate_for("render", props)
+        text = _credit_price("Render with AI", account_estimate("render", props)) if acct else _price_text("Render with AI", estimate_for("render", props))
         row = layout.row()
         row.scale_y = 1.5
         row.enabled = not _blocked(layout)
-        row.operator("popnow.render", text=_price_text("Render with AI", est), icon="SHADING_RENDERED")
+        row.operator("popnow.render", text=text, icon="SHADING_RENDERED")
         if props.render_source in ("CAMERA", "RENDER") and context.scene.camera is None:
             _note(layout, "Add a camera, or switch to Viewport", "ERROR")
 
@@ -156,6 +211,11 @@ class POPNOW_PT_render_more(_Panel):
         layout.use_property_split = True
         layout.use_property_decorate = False
         props = context.scene.popnow
+        if _account():
+            layout.prop(props, "render_aspect")
+            layout.prop(props, "render_look")
+            layout.prop(props, "render_pass")
+            return
         spec = models.get(props.render_model)
         if spec is None:
             return
@@ -185,10 +245,13 @@ class POPNOW_PT_animate(_Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.popnow
-        spec = models.get(props.anim_model)
         layout.row().prop(props, "source", expand=True)
         _prompt(layout, props, "anim_prompt", "Two friends walk through a park in autumn")
         layout.prop(props, "anim_style")
+        if _account():
+            self._draw_account(context, layout, props)
+            return
+        spec = models.get(props.anim_model)
         layout.prop(props, "anim_model")
         if spec is None:
             return
@@ -217,6 +280,25 @@ class POPNOW_PT_animate(_Panel):
         row.enabled = not _blocked(layout)
         row.operator("popnow.animate", text=_price_text("Animate with AI", est), icon="RENDER_ANIMATION")
 
+    def _draw_account(self, context, layout, props) -> None:
+        """Account mode: no model picker. With a character image the clip's motion goes onto that character, otherwise the clip is restyled"""
+        spec = account_jobs.neutral_spec("animate", props.anim_character is not None)
+        layout.label(text="Character (optional)")
+        layout.template_ID(props, "anim_character", open="image.open")
+        if props.anim_character is None:
+            col = layout.column(align=True)
+            col.label(text="Reference images (optional)")
+            col.template_ID(props, "anim_ref_1", open="image.open")
+            if props.anim_ref_1 is not None:
+                col.template_ID(props, "anim_ref_2", open="image.open")
+        layout.prop(props, "anim_clip_seconds")
+        secs = animate_seconds(spec, props)
+        _note(layout, capture.frames_note(context.scene, secs), "SEQUENCE")
+        row = layout.row()
+        row.scale_y = 1.5
+        row.enabled = not _blocked(layout)
+        row.operator("popnow.animate", text=_credit_price("Animate with AI", account_estimate("animate", props)), icon="RENDER_ANIMATION")
+
 
 class POPNOW_PT_animate_more(_Panel):
     bl_label = "More"
@@ -228,6 +310,10 @@ class POPNOW_PT_animate_more(_Panel):
         layout.use_property_split = True
         layout.use_property_decorate = False
         props = context.scene.popnow
+        if _account():
+            layout.prop(props, "anim_look")
+            _note(layout, "The preview is a quick Workbench render of your animation")
+            return
         spec = models.get(props.anim_model)
         if spec is None:
             return
@@ -255,9 +341,11 @@ class POPNOW_PT_texture(_Panel):
         props = context.scene.popnow
         _prompt(layout, props, "tex_prompt", "Mossy cobblestone")
         layout.prop(props, "tex_style")
-        row = layout.row(align=True)
-        row.prop(props, "tex_model", text="")
-        row.prop(props, "tex_resolution", text="")
+        acct = _account()
+        if not acct:
+            row = layout.row(align=True)
+            row.prop(props, "tex_model", text="")
+            row.prop(props, "tex_resolution", text="")
         col = layout.column(align=True)
         col.prop(props, "tex_seamless")
         col.prop(props, "tex_apply")
@@ -265,11 +353,11 @@ class POPNOW_PT_texture(_Panel):
             col.prop(props, "tex_scale")
             n = len([o for o in context.selected_objects if hasattr(getattr(o, "data", None), "materials")])
             _note(layout, f"{n} selected object(s)" if n else "Nothing selected: the texture is only saved", "OBJECT_DATA")
-        est = estimate_for("texture", props)
+        text = _credit_price("Generate Texture", account_estimate("texture", props)) if acct else _price_text("Generate Texture", estimate_for("texture", props))
         row = layout.row()
         row.scale_y = 1.5
         row.enabled = not _blocked(layout) and bool(props.tex_prompt.strip())
-        row.operator("popnow.texture", text=_price_text("Generate Texture", est), icon="TEXTURE")
+        row.operator("popnow.texture", text=text, icon="TEXTURE")
 
 
 def draw_tasks(layout, context) -> None:
@@ -284,9 +372,13 @@ def draw_tasks(layout, context) -> None:
         box = layout.box()
         head = box.row(align=True)
         head.label(text=f"{job.workflow.title()} · {job.label}", icon=STATE_ICON.get(job.state, "DOT"))
-        cost = job.cost()
-        if cost is not None and job.state in ("succeeded", "failed") and job.settled:
-            head.label(text=format_usd(cost))
+        if job.mode == "account":
+            if job.state == "succeeded" and job.credits is not None:
+                head.label(text=credits_text(job.credits))
+        else:
+            cost = job.cost()
+            if cost is not None and job.state in ("succeeded", "failed") and job.settled:
+                head.label(text=format_usd(cost))
         if not job.is_active:
             op = head.operator("popnow.job_remove", text="", icon="X", emboss=False)
             op.job_id = job.id
@@ -296,7 +388,19 @@ def draw_tasks(layout, context) -> None:
             box.progress(factor=max(0.02, min(job.progress, 1.0)), text=job.status[:70])
         else:
             label_multiline(box, context, job.status, max_lines=4, alert=job.state == "failed")
-        if job.state == "awaiting_confirm":
+        if job.state == "awaiting_confirm" and job.mode == "account":
+            ok = True
+            if job.extra.get("needs_consent"):
+                ticked = bool(job.extra.get("consent_ticked"))
+                box.operator("popnow.job_consent", icon="CHECKBOX_HLT" if ticked else "CHECKBOX_DEHLT", emboss=False).job_id = job.id
+                ok = ticked
+            row = box.row(align=True)
+            row.scale_y = 1.3
+            start = row.row(align=True)
+            start.enabled = ok
+            start.operator("popnow.job_confirm", text=f"Start · {credits_text(job.max_credits)}" if job.max_credits else "Start", icon="PLAY").job_id = job.id
+            row.operator("popnow.job_cancel", text="Cancel").job_id = job.id
+        elif job.state == "awaiting_confirm":
             row = box.row(align=True)
             row.scale_y = 1.3
             most, usual = job.max_charge(), job.expected_charge()

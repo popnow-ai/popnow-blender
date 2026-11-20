@@ -8,6 +8,39 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-21
+
+Sign in with a PopNow account and pay with credits, the same balance as on popnow.ai. API-key mode stays as it was.
+
+### Added
+
+- **Sign in with PopNow** in the preferences and the PopNow tab: OAuth 2.1 with PKCE, a dynamically registered public
+  client and a loopback redirect (`http.server` on 127.0.0.1, random port, in a thread); state and issuer are checked,
+  and every endpoint must be https except on this computer. **Sign out** deletes the session and revokes it.
+- The session is `account.json` in the add-on's own user folder (`extension_path_user`), mode 0600, written to a
+  temporary file and renamed. It is never stored in userpref.blend or a `.blend` file.
+- Account mode (no API key, signed in): Render uses `edit_image`, Animate uses `edit_video` (or `copy_motion` with a
+  character image), Texture uses `create_image` at 1:1, through the MCP server at `https://api.popnow.ai/mcp`. Inputs go
+  up through an upload window (`request_upload`, `/console/v1/upload-sessions`, `get_upload`). No model is sent; the
+  server picks one, shown as **Auto**. Prompts use neutral wording.
+- Prices in credits: the button shows a local estimate ("about 48 credits"), `estimate_cost` gives the price, you
+  confirm, and the tool is called with `max_credits` set to it. A higher price is always shown and confirmed again;
+  `max_credits` is never raised on its own. `needs_consent` is passed to you as a checkbox. New preference **Start
+  without asking up to (credits)**, default 0 (always ask).
+- The panel shows your credits (`check_balance`). Failed creations say the credits are refunded. Tasks keep their mode in
+  the history, so Resume and Run again use the mode they were made in.
+- `tests/fake_server.py` also fakes OAuth, MCP (JSON and event-stream replies) and upload windows; `tests/test_account.py`
+  covers sign-in, the callback checks, refresh on 401, sign-out, uploads, quote and confirm (declining charges nothing,
+  the cap is never raised), the threshold, consent, polling, download, failure and resume. The fake-bpy smoke test
+  draws every panel in account mode and checks that no dollar amount shows. The Blender self-test signs in and runs
+  Texture and Render on credits.
+
+### Changed
+
+- With an API key, amounts are described as your PopNow balance, shown in USD (the same balance as on popnow.ai),
+  replacing the old "separate from website credits" wording.
+- `User-Agent: PopNow-Blender/0.4.0`.
+
 ## [0.2.0] - 2026-11-01
 
 The PopNow API bills in exact USD from its own API balance, separate from website credits. The add-on now shows, confirms
